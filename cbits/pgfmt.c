@@ -64,6 +64,24 @@ int pgfmt_scan(const char *sql, char **out, size_t *out_len, int *cursor)
     return rc;
 }
 
+/* libpg_query's JSON for the PL/pgSQL functions sql creates. */
+int pgfmt_parse_plpgsql(const char *sql, char **out, size_t *out_len, int *cursor)
+{
+    PgQueryPlpgsqlParseResult result = pg_query_parse_plpgsql(sql);
+    int rc;
+    if (result.error) {
+        rc = fail(result.error, out, out_len, cursor);
+    } else {
+        const char *json = result.plpgsql_funcs ? result.plpgsql_funcs : "[]";
+        *out_len = strlen(json);
+        *out = copy_bytes(json, *out_len);
+        *cursor = 0;
+        rc = 0;
+    }
+    pg_query_free_plpgsql_parse_result(result);
+    return rc;
+}
+
 /*
  * SQL for a protobuf parse tree. With pretty set, libpg_query's pretty printer
  * lays it out, and the comments of comment_source (the text the tree was parsed

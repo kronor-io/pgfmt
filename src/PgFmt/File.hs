@@ -25,6 +25,7 @@ import Data.Text.Encoding qualified as TE
 import Lens.Micro ((^.))
 import PgFmt.LibPgQuery (LibPgQueryError (..), PrettyOptions, Statement (..), Token (..))
 import PgFmt.LibPgQuery qualified as LibPgQuery
+import PgFmt.Plpgsql qualified as Plpgsql
 import PgFmt.Render (Dialect (..), FormatError (..))
 import PgFmt.Render qualified as Render
 import PgQuery qualified as Pg
@@ -113,7 +114,7 @@ formatFile opts text = do
             -- Each statement was checked on its own; check the file as a
             -- whole too, which also catches text between statements that a
             -- rewrite changed the meaning of (a semicolon commented out).
-            same <- sameStatements (map (.raw) stmts) r.output
+            same <- sameStatements (map (.expected) results) r.output
             pure . Right $ case same of
                 Nothing -> r
                 Just reason ->
@@ -144,6 +145,9 @@ data Replacement = Replacement
     , to :: Int
     , text :: Maybe Text
     , report :: StatementReport
+    , expected :: Pg.RawStmt
+    -- ^ The statement the new text must parse to: the original, or the
+    -- original with its PL/pgSQL body formatted.
     }
 
 
@@ -175,35 +179,40 @@ formatOne opts source toks stmt =
                     [] -> stmt.end
                 bodyEnd = maximum (bodyStart : map (.end) code)
                 body = BS.take (bodyEnd - bodyStart) (BS.drop bodyStart source)
-                interiorComments = any (.isComment) code
                 lineNo = 1 + BS.count 10 (BS.take bodyStart source)
                 -- The column the statement starts at, when only whitespace
                 -- precedes it on its line: its other lines line up with it.
                 lineBefore = decode (snd (BS.breakEnd (== 10) (BS.take bodyStart source)))
                 column = if T.all (== ' ') lineBefore then T.length lineBefore else 0
-                done outcome new =
+                done outcome new expected =
                     Replacement
                         { from = bodyStart
                         , to = bodyEnd
                         , text = new
                         , report = StatementReport{line = lineNo, outcome}
+                        , expected
                         }
             if null code
-                then pure (done (Kept "only comments") Nothing)
+                then pure (done (Kept "only comments") Nothing stmt.raw)
                 else do
-                    attempt <- runBackend opts body interiorComments
-                    case attempt of
-                        Left outcome -> pure (done outcome Nothing)
-                        Right (used, formatted0) -> do
-                            cased <- applyKeywordCase opts used body formatted0
-                            case cased of
-                                Left reason -> pure (done (Failed reason) Nothing)
-                                Right formatted1 -> do
-                                    formatted <- endLineComment =<< indentContinuation column formatted1
-                                    verdict <- verify stmt.raw (TE.encodeUtf8 formatted) (countComments code)
-                                    pure case verdict of
-                                        Nothing -> done (FormattedBy used) (Just formatted)
-                                        Just reason -> done (Failed reason) Nothing
+                    bodies <- Plpgsql.formatBodies (formatEmbedded opts) body
+                    withBody <- case bodies of
+                        Left reason -> pure (Left reason)
+                        Right Nothing -> pure (Right (body, stmt.raw, False))
+                        Right (Just body') -> do
+                            reparsed <- LibPgQuery.parse body'
+                            pure case reparsed of
+                                Right tree | [raw'] <- tree ^. Pg.stmts -> Right (body', raw', True)
+                                _ -> Left "the statement with its formatted PL/pgSQL body does not parse"
+                    case withBody of
+                        Left reason -> pure (done (Failed reason) Nothing stmt.raw)
+                        Right (code', raw', bodyChanged) -> do
+                            laid <- layOut opts column code' raw'
+                            pure case laid of
+                                Right (used, formatted) -> done (FormattedBy used) (Just formatted) raw'
+                                Left outcome@(Kept _)
+                                    | bodyChanged -> done outcome (Just (decode code')) raw'
+                                Left outcome -> done outcome Nothing stmt.raw
   where
     keep a b reason =
         Replacement
@@ -211,8 +220,43 @@ formatOne opts source toks stmt =
             , to = b
             , text = Nothing
             , report = StatementReport{line = 1 + BS.count 10 (BS.take a source), outcome = Kept reason}
+            , expected = stmt.raw
             }
-    countComments = length . filter (.isComment)
+
+
+-- | Lay out one statement (no comments before or after it) that parses to
+-- @raw@, starting at @column@, and check the result still parses to it.
+layOut :: Options -> Int -> ByteString -> Pg.RawStmt -> IO (Either Outcome (Backend, Text))
+layOut opts column code raw = do
+    scanned <- LibPgQuery.scan code
+    let comments = either (const 0) (length . filter (.isComment) . LibPgQuery.tokens) scanned
+    attempt <- runBackend opts code (comments > 0)
+    case attempt of
+        Left outcome -> pure (Left outcome)
+        Right (used, formatted0) -> do
+            cased <- applyKeywordCase opts used code formatted0
+            case cased of
+                Left reason -> pure (Left (Failed reason))
+                Right formatted1 -> do
+                    formatted <- endLineComment =<< indentContinuation column formatted1
+                    verdict <- verify raw (TE.encodeUtf8 formatted) comments
+                    pure case verdict of
+                        Nothing -> Right (used, formatted)
+                        Just reason -> Left (Failed reason)
+
+
+-- | Lay out a SQL statement embedded in a PL/pgSQL body.
+formatEmbedded :: Options -> Int -> ByteString -> IO (Either Text (Maybe Text))
+formatEmbedded opts column query = do
+    parsed <- LibPgQuery.parse query
+    case parsed of
+        Right tree | [raw] <- tree ^. Pg.stmts -> do
+            laid <- layOut opts column query raw
+            pure case laid of
+                Right (_, formatted) -> Right (Just formatted)
+                Left (Failed reason) -> Left reason
+                Left _ -> Right Nothing
+        _ -> pure (Right Nothing)
 
 
 -- | Lay out one statement, or say why not.

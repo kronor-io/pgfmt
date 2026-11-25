@@ -46,11 +46,13 @@ library
     PgFmt
     PgFmt.File
     PgFmt.LibPgQuery
+    PgFmt.Plpgsql
     PgFmt.Render
 
   c-sources:       cbits/pgfmt.c
   extra-libraries: pg_query
   build-depends:
+    , aeson
     , base               >=4.18 && <5
     , bytestring
     , libpg-query        ^>=0.1

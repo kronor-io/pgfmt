@@ -7,6 +7,7 @@
 module PgFmt.LibPgQuery (
     LibPgQueryError (..),
     parse,
+    parsePlpgsql,
     scan,
     deparse,
     PrettyOptions (..),
@@ -47,6 +48,10 @@ type Out = Ptr CString -> Ptr CSize -> Ptr CInt -> IO CInt
 
 foreign import ccall safe "pgfmt_parse"
     c_parse :: CString -> Out
+
+
+foreign import ccall safe "pgfmt_parse_plpgsql"
+    c_parse_plpgsql :: CString -> Out
 
 
 foreign import ccall safe "pgfmt_scan"
@@ -92,6 +97,12 @@ decodeProto = \case
 -- | PostgreSQL's parse tree of UTF-8 SQL.
 parse :: ByteString -> IO (Either LibPgQueryError Pg.ParseResult)
 parse sql = decodeProto <$> withSql sql (runOut . c_parse)
+
+
+-- | libpg_query's JSON for the PL/pgSQL functions UTF-8 SQL creates: an
+-- array with one @PLpgSQL_function@ per function, empty when it creates none.
+parsePlpgsql :: ByteString -> IO (Either LibPgQueryError ByteString)
+parsePlpgsql sql = withSql sql (runOut . c_parse_plpgsql)
 
 
 -- | PostgreSQL's token stream of UTF-8 SQL, comments included.

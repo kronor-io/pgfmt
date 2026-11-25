@@ -33,6 +33,23 @@ formatter bug; that statement is left as it was).
    either backend: the `syntax` backend also checks its own output against
    postgresql-syntax's AST.
 
+## PL/pgSQL
+
+To PostgreSQL's SQL parser a function body is one string, so the file pass
+alone leaves it byte for byte. For a PL/pgSQL function, pgfmt also parses the
+body with libpg_query's PL/pgSQL parser and lays out the plain SQL statements
+in it, `INSERT`/`UPDATE`/`DELETE`/`SELECT` run for their effect and
+`RETURN QUERY`, with the same backends and keyword case, indented to where each
+starts. The PL/pgSQL around them (`DECLARE`, `IF`, loops, assignments) and
+statements with `INTO` are left as they are. The new body is only used if its
+PL/pgSQL parse matches the old one, with line numbers dropped and every query
+compared by its normal form.
+
+libpg_query's parser gives each statement's line and source text but no
+offsets, so pgfmt finds a statement by searching for its text from the start
+of its line. Functions it cannot compile are skipped: it does not resolve
+types outside `pg_catalog` and `public`.
+
 ## Keyword case
 
 `--keyword-case lower` (the default) or `upper` spells the keywords of every

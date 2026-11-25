@@ -100,6 +100,13 @@ cases =
         , expected = Output "CREATE TABLE t (\n    name text,\n    type int\n);\nSELECT\n    name\n  , type\nFROM t\nWHERE name = 'x';\n"
         }
     , Case
+        { name = "PL/pgSQL: embedded statements are laid out, INTO and control flow left alone"
+        , backend = Auto
+        , keywordCase = Lower
+        , input = "create function f(p int) returns void language plpgsql as $$\ndeclare\n    v int;\nbegin\n    select a into v from t where id = p;\n    update t set a = 1, b = 2 where id = p;\n    if v > 1 then\n        delete from t where id = p;\n    end if;\nend;\n$$;\n"
+        , expected = Output "create function f(p int) returns void language plpgsql as $$\ndeclare\n    v int;\nbegin\n    select a into v from t where id = p;\n    update t\n    set\n        a = 1\n      , b = 2\n    where id = p;\n    if v > 1 then\n        delete from t\n        where id = p;\n    end if;\nend;\n$$;\n"
+        }
+    , Case
         { name = "not SQL"
         , backend = Auto
         , keywordCase = Lower
