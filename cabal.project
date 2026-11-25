@@ -21,4 +21,4 @@ allow-newer:
   *:template-haskell,
   *:text
 
-index-state: hackage.haskell.org 2026-11-25T00:00:00Z
+index-state: hackage.haskell.org 2026-11-24T23:00:00Z
