@@ -33,6 +33,8 @@ bodies. Before it rewrites a statement, it parses the new text again and checks
 that PostgreSQL sees the same statement. If the check fails, the statement is
 left as it was.
 
+pgfmt is one of the tools Kronor uses to keep a PostgreSQL schema in sqitch, with [sqiff](https://github.com/kronor-io/sqiff), [sqint](https://github.com/kronor-io/sqint), [create-migration](https://github.com/kronor-io/sqitch-with-templates) and [psql-retry](https://github.com/kronor-io/psql-retry). [sqitchcraft](https://kronor-io.github.io/sqitchcraft/) shows how they fit together: the repository layout they assume, one change from an edited file to a deploy, and instructions for coding agents.
+
 ## Install
 
 pgfmt is a single binary. The easiest way to get it is
