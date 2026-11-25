@@ -35,6 +35,10 @@
             tag = "18.0.0";
             hash = "sha256-Fs9SFs8ramKYdkv1gEOMJd9SnLmKDcbf+zYKv1hHBfc=";
           };
+          # The deparser writes a SET value that is not a plain identifier as
+          # a double-quoted identifier (`set lock_timeout to "50ms"`); the
+          # patch writes it as a string literal ('50ms') instead.
+          patches = [ ./nix/libpg_query-set-values-as-strings.patch ];
           # pg_query.h includes postgres_deparse.h, which upstream's install
           # leaves out; and the shared library's SONAME needs a file by that
           # name (see kronor-io/pg-query's flake for the details).

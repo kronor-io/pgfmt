@@ -67,6 +67,34 @@ cases =
         , expected = Output "select a\nfrom t\n-- the a\n;\nselect 2;\n"
         }
     , Case
+        { name = "libpg-query: a SET value stays a string, not a quoted identifier"
+        , backend = LibPgQuery
+        , keywordCase = Lower
+        , input = "set lock_timeout to '50ms';\nset statement_timeout to '50ms';\n"
+        , expected = Output "set lock_timeout to '50ms';\nset statement_timeout to '50ms';\n"
+        }
+    , Case
+        { name = "libpg-query: a search_path with \"$user\" parses to the same statement"
+        , backend = LibPgQuery
+        , keywordCase = Lower
+        , input = "set search_path to \"$user\", public;\n"
+        , expected = Output "set search_path to '$user', public;\n"
+        }
+    , Case
+        { name = "libpg-query: SET values that are words, numbers or default stay bare"
+        , backend = LibPgQuery
+        , keywordCase = Lower
+        , input = "set x to on;\nset search_path to public;\nset statement_timeout to 10000;\nset x to default;\n"
+        , expected = Output "set x to on;\nset search_path to public;\nset statement_timeout to 10000;\nset x to default;\n"
+        }
+    , Case
+        { name = "libpg-query: a function's language stays a bare word"
+        , backend = LibPgQuery
+        , keywordCase = Lower
+        , input = "create function f() returns int language plpgsql as $$ begin return 1; end; $$;\n"
+        , expected = Output "create function f() returns int language plpgsql as $$ begin return 1; end; $$;\n"
+        }
+    , Case
         { name = "auto: DDL to libpg_query, DML to the syntax backend"
         , backend = Auto
         , keywordCase = Lower
