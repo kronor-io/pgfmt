@@ -15,6 +15,7 @@ author:        Kronor
 maintainer:    dev@kronor.io
 build-type:    Simple
 extra-doc-files:
+  CHANGELOG.md
   README.md
 
 source-repository head
