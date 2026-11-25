@@ -38,19 +38,21 @@ pgfmt is one of the tools Kronor uses to keep a PostgreSQL schema in sqitch, wit
 ## Install
 
 pgfmt is a single binary. The easiest way to get it is
-[Nix](https://nixos.org/download) with flakes enabled. The first build compiles
-pgfmt and its Haskell dependencies, which takes a while.
+[Nix](https://nixos.org/download) with flakes enabled. CI pushes every build to
+the `kronor-open.cachix.org` binary cache, and the flake offers to use it:
+answer yes, or pass `--accept-flake-config`, and Nix downloads pgfmt instead of
+compiling it and its Haskell dependencies.
 
 Try it without installing:
 
 ```bash
-nix run github:kronor-io/pgfmt -- --help
+nix run --accept-flake-config github:kronor-io/pgfmt -- --help
 ```
 
 Install it into your profile:
 
 ```bash
-nix profile install github:kronor-io/pgfmt
+nix profile install --accept-flake-config github:kronor-io/pgfmt
 ```
 
 Or add it to a flake's dev shell:
@@ -133,7 +135,7 @@ In GitHub Actions:
 
 ```yaml
 - uses: cachix/install-nix-action@v31
-- run: nix run github:kronor-io/pgfmt -- --check $(git ls-files '*.sql')
+- run: nix run --accept-flake-config github:kronor-io/pgfmt -- --check $(git ls-files '*.sql')
 ```
 
 As a [pre-commit](https://pre-commit.com) hook, with pgfmt on your `PATH`:
