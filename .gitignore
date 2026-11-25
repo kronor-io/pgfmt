@@ -1,0 +1,6 @@
+dist-newstyle/
+result
+result-*
+.claude/worktrees/
+dist-static/
+cabal.project.local
