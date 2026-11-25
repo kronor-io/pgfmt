@@ -1,0 +1,107 @@
+#!/usr/bin/env bash
+# pgfmt linked statically against musl, for the tarballs a version tag attaches
+# to its GitHub release (.github/workflows/check.yml): one file that runs on any
+# Linux distribution, for the architecture this runs on.
+#
+#   scripts/build-static     writes dist-static/pgfmt-<arch>-linux.tar.xz
+#
+# It builds in Alpine, with the GHC of the ghc-musl image, since nixpkgs and
+# haskell.nix would compile a musl GHC first. Outside that image it runs itself
+# in it with docker. cabal's store and build directory stay in dist-static/, so
+# a later run, or CI's cache of that folder, reuses them.
+#
+# The tarball holds bin/pgfmt and its completion scripts under share/, so
+# unpacking it into ~/.local or /usr/local installs both.
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+# ghc-musl 9.12.4, the GHC the flake builds pgfmt with.
+image=docker.io/benz0li/ghc-musl:9.12.4@sha256:e5b180fb35e3520296e86efc3aafc2859821afb1be02ef55a7add7fb893606e5
+
+if [ ! -e /etc/alpine-release ]; then
+    exec docker run --rm -v "$PWD:/src" -w /src "$image" scripts/build-static
+fi
+
+out=dist-static
+export CABAL_DIR="$PWD/$out/cabal"
+
+# The image runs as root; leave the files to whoever owns the checkout, also
+# when the build fails.
+mkdir -p "$out"
+trap 'chown -R "$(stat -c %u:%g .)" "$out"' EXIT
+
+apk add --no-cache binutils tar xz curl make patch
+
+# libpg_query 18, which libpg-query was generated against, as a static library,
+# with the same patch the flake applies (flake.nix). Alpine packages none, so it
+# is built from the release. The patch is part of the cache key, so a changed
+# patch rebuilds it.
+libpg_query_version=18.0.0
+libpg_query_sha256=6ad7783f272acfd116455c66a03298a0cac9a9168281df547969219112f0260f
+libpg_query_patch=nix/libpg_query-set-values-as-strings.patch
+libpg_query="$out/libpg_query-$libpg_query_version-$(sha256sum "$libpg_query_patch" | cut -c1-12)"
+if [ ! -e "$libpg_query/libpg_query.a" ]; then
+    rm -rf "$libpg_query"
+    mkdir -p "$libpg_query"
+    curl -fsSL -o "$out/libpg_query-$libpg_query_version.tar.gz" \
+        "https://github.com/pganalyze/libpg_query/archive/refs/tags/$libpg_query_version.tar.gz"
+    echo "$libpg_query_sha256  $out/libpg_query-$libpg_query_version.tar.gz" | sha256sum -c -
+    tar -xzf "$out/libpg_query-$libpg_query_version.tar.gz" -C "$libpg_query" --strip-components=1
+    patch -d "$libpg_query" -p1 < "$libpg_query_patch"
+    make -C "$libpg_query" -j"$(nproc)" build
+fi
+mkdir -p /usr/local/lib /usr/local/include
+cp "$libpg_query/libpg_query.a" /usr/local/lib/libpg_query.a
+cp "$libpg_query/pg_query.h" /usr/local/include/pg_query.h
+cp "$libpg_query/postgres_deparse.h" /usr/local/include/postgres_deparse.h
+
+cabal update --builddir "$out/build"
+cabal build exe:pgfmt \
+    --builddir "$out/build" \
+    --enable-optimization \
+    --enable-executable-static \
+    --extra-lib-dirs=/usr/local/lib \
+    --extra-include-dirs=/usr/local/include
+
+stage="$out/stage"
+rm -rf "$stage"
+mkdir -p "$stage/bin" \
+    "$stage/share/bash-completion/completions" \
+    "$stage/share/zsh/site-functions" \
+    "$stage/share/fish/vendor_completions.d"
+cp "$(cabal list-bin exe:pgfmt --builddir "$out/build" --enable-optimization)" "$stage/bin/pgfmt"
+strip "$stage/bin/pgfmt"
+
+# A static binary has no interpreter or shared libraries to ask for; anything
+# else would only run where they are installed.
+if readelf -l "$stage/bin/pgfmt" | grep -q INTERP; then
+    echo "scripts/build-static: $stage/bin/pgfmt is not static" >&2
+    exit 1
+fi
+
+# The binary must behave like the flake's: libpg_query formats the SET, and
+# only the patched library keeps its value's single quotes.
+smoke=$(printf "SET lock_timeout TO '50ms';\n" | "$stage/bin/pgfmt")
+expected="set lock_timeout to '50ms';"
+if [ "$smoke" != "$expected" ]; then
+    printf 'scripts/build-static: unexpected output from %s:\n%s\n' "$stage/bin/pgfmt" "$smoke" >&2
+    exit 1
+fi
+
+# optparse-applicative writes the path it is given into each script, for the
+# script to run. The tarball can be unpacked anywhere, so the scripts run pgfmt
+# from PATH instead.
+completion() {
+    local binary="$PWD/$stage/bin/pgfmt"
+    "$binary" "--$1-completion-script" "$binary" | sed "s|$binary|pgfmt|g" > "$stage/share/$2"
+}
+completion bash bash-completion/completions/pgfmt
+completion zsh zsh/site-functions/_pgfmt
+completion fish fish/vendor_completions.d/pgfmt.fish
+
+tarball="$out/pgfmt-$(uname -m)-linux.tar.xz"
+tar --sort=name --owner=0 --group=0 --numeric-owner --mtime=@1 \
+    -cJf "$tarball" -C "$stage" bin share
+
+echo "$tarball"
