@@ -332,8 +332,16 @@ nix build            # result/bin/pgfmt
 nix flake check      # the test suites
 ```
 
-With cabal (GHC 9.12), build libpg_query 18 and point cabal at it in
-`cabal.project.local`:
+The flake applies one patch to libpg_query,
+[`nix/libpg_query-set-values-as-strings.patch`](nix/libpg_query-set-values-as-strings.patch).
+Without it, libpg_query writes a `set` value that is not a plain lowercase
+word as a quoted identifier: `set lock_timeout to '50ms'` comes out as
+`set lock_timeout to "50ms"`. PostgreSQL reads both the same way, but the
+patched library keeps the string.
+
+With cabal (GHC 9.12), build libpg_query 18 with that patch
+(`patch -p1 < /path/to/pgfmt/nix/libpg_query-set-values-as-strings.patch` in
+its source tree) and point cabal at it in `cabal.project.local`:
 
 ```cabal
 package libpg-query

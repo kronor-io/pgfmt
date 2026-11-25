@@ -1,0 +1,97 @@
+diff --git a/src/postgres_deparse.c b/src/postgres_deparse.c
+index 58401ad..1ed0fbd 100644
+--- a/src/postgres_deparse.c
++++ b/src/postgres_deparse.c
+@@ -1441,19 +1441,20 @@ static void deparseCommonFuncOptItem(DeparseState *state, DefElem *def_elem)
+ 
+ // "NonReservedWord_or_Sconst" in gram.y
+ //
+-// Note since both identifiers and string constants are allowed here, we
+-// currently always return an identifier, except:
+-//
+-// 1) when the string is empty (since an empty identifier can't be scanned)
+-// 2) when the value is equal or larger than NAMEDATALEN (64+ characters)
++// Both identifiers and string constants are allowed here, and both parse to
++// the same String value. We write a bare word when the value needs no
++// quoting as an identifier (e.g. "plpgsql", "public"), and a string constant
++// otherwise (e.g. '50ms', '$user', 'UTC'): a double-quoted value would read as
++// an identifier, which it is not. A string constant is also used when the
++// string is empty (since an empty identifier can't be scanned) and when the
++// value is equal or larger than NAMEDATALEN (64+ characters), since an
++// identifier that long would be truncated.
+ static void deparseNonReservedWordOrSconst(DeparseState *state, const char *val)
+ {
+-	if (strlen(val) == 0)
+-		deparseAppendStringInfoString(state, "''");
+-	else if (strlen(val) >= NAMEDATALEN)
+-		deparseStringLiteral(state, val);
++	if (strlen(val) > 0 && strlen(val) < NAMEDATALEN && quote_identifier(val) == val)
++		deparseAppendStringInfoString(state, val);
+ 	else
+-		deparseAppendStringInfoString(state, quote_identifier(val));
++		deparseStringLiteral(state, val);
+ }
+ 
+ // "func_as" in gram.y
+@@ -9260,7 +9261,7 @@ static void deparseCreatePLangStmt(DeparseState *state, CreatePLangStmt *create_
+ 		deparseAppendStringInfoString(state, "TRUSTED ");
+ 
+ 	deparseAppendStringInfoString(state, "LANGUAGE ");
+-	deparseNonReservedWordOrSconst(state, create_p_lang_stmt->plname);
++	deparseColId(state, create_p_lang_stmt->plname);
+ 	deparseAppendStringInfoChar(state, ' ');
+ 
+ 	deparseAppendStringInfoString(state, "HANDLER ");
+diff --git a/test/deparse_tests.c b/test/deparse_tests.c
+index 2fb9c0c..164bee6 100644
+--- a/test/deparse_tests.c
++++ b/test/deparse_tests.c
+@@ -221,6 +221,8 @@ const char* tests[] = {
+   "SET statement_timeout TO 10000",
+   "SET search_path TO my_schema, public",
+   "SET LOCAL search_path TO my_schema, public",
++  "SET search_path TO '$user', public",
++  "SET lock_timeout TO '50ms'",
+   "SET \"user\" TO 4",
+   "SET TIME ZONE interval '+00:00' hour to minute",
+   "SET timezone TO -7",
+@@ -326,8 +328,8 @@ const char* tests[] = {
+   "SELECT LIMIT ALL",
+   "SELECT * FROM ROWS FROM (foo() AS (foo_res_a text COLLATE a, foo_res_b text))",
+   "CREATE DATABASE x OWNER abc CONNECTION LIMIT 5",
+-  "CREATE DATABASE x ENCODING \"SQL_ASCII\"",
+-  "CREATE DATABASE x LC_COLLATE \"en_US.UTF-8\"",
++  "CREATE DATABASE x ENCODING 'SQL_ASCII'",
++  "CREATE DATABASE x LC_COLLATE 'en_US.UTF-8'",
+   "CREATE DATABASE x LOCATION DEFAULT",
+   "CREATE DATABASE x TABLESPACE abc",
+   "CREATE DATABASE x TEMPLATE TRUE",
+@@ -335,9 +337,9 @@ const char* tests[] = {
+   "ALTER DATABASE x ALLOW_CONNECTIONS FALSE",
+   "ALTER DATABASE x IS_TEMPLATE TRUE",
+   "ALTER DATABASE x TABLESPACE abc",
+-  "ALTER DATABASE x SET work_mem TO \"10MB\"",
++  "ALTER DATABASE x SET work_mem TO '10MB'",
+   "ALTER EXTENSION x UPDATE",
+-  "ALTER EXTENSION x UPDATE TO \"1.2\"",
++  "ALTER EXTENSION x UPDATE TO '1.2'",
+   "ALTER EXTENSION x ADD ACCESS METHOD a",
+   "ALTER EXTENSION x DROP ACCESS METHOD a",
+   "ALTER EXTENSION x ADD AGGREGATE a(b)",
+@@ -382,7 +384,7 @@ const char* tests[] = {
+   "ALTER SYSTEM SET fsync TO OFF",
+   "ALTER SYSTEM RESET fsync",
+   "CREATE EXTENSION x",
+-  "CREATE EXTENSION IF NOT EXISTS x CASCADE VERSION \"1.2\" SCHEMA a",
++  "CREATE EXTENSION IF NOT EXISTS x CASCADE VERSION '1.2' SCHEMA a",
+   "CREATE TABLE like_constraint_rename_cache (LIKE constraint_rename_cache INCLUDING ALL)",
+   "COPY manual_export TO STDOUT CSV HEADER",
+   "SELECT 1 FROM a.b.c",
+diff --git a/test/sql/deparse-depesz/12-explains.d/05-other.psql b/test/sql/deparse-depesz/12-explains.d/05-other.psql
+index e35ddfe..ee6b4f6 100644
+--- a/test/sql/deparse-depesz/12-explains.d/05-other.psql
++++ b/test/sql/deparse-depesz/12-explains.d/05-other.psql
+@@ -1,2 +1,2 @@
+-EXPLAIN (ANALYZE, VERBOSE, COSTS OFF, SETTINGS ON, BUFFERS OFF, WAL ON, TIMING OFF, SUMMARY ON, FORMAT "json")
++EXPLAIN (ANALYZE, VERBOSE, COSTS OFF, SETTINGS ON, BUFFERS OFF, WAL ON, TIMING OFF, SUMMARY ON, FORMAT 'json')
+     SELECT 1
