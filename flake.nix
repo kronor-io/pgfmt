@@ -45,6 +45,10 @@
             cd "$out/lib"
             [ "$1" = "$3" ] || ln -s "$3" "$1"
             [ "$2" = "$3" ] || [ "$2" = "$1" ] || ln -s "$3" "$2"
+          '' + prev.lib.optionalString prev.stdenv.hostPlatform.isDarwin ''
+            # Upstream links the dylib with a bare install name, so whatever
+            # links it cannot find it at run time; point it at the store.
+            install_name_tool -id "$out/lib/$1" "$out/lib/$3"
           '';
         });
         pg_query = final.libpg_query;
