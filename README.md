@@ -4,7 +4,8 @@ Format PostgreSQL files, statement by statement, without changing what any
 statement means.
 
 ```
-pgfmt [--check] [--backend auto|syntax|libpg-query] [--dialect plain|hasql-th] [FILE...]
+pgfmt [--check] [--backend auto|syntax|libpg-query] [--keyword-case lower|upper]
+      [--dialect plain|hasql-th] [FILE...]
 ```
 
 With no files, or `-`, it reads stdin and writes stdout. `--check` changes
@@ -31,6 +32,18 @@ formatter bug; that statement is left as it was).
    same number of comments as the original. This check is independent of
    either backend: the `syntax` backend also checks its own output against
    postgresql-syntax's AST.
+
+## Keyword case
+
+`--keyword-case lower` (the default) or `upper` spells the keywords of every
+formatted statement one way, whichever backend laid it out; identifiers are
+never touched, including the ones spelled like keywords (`name`, `type`,
+`value`). libpg_query writes keywords in upper case and identifiers in lower
+case, which tells them apart in its output. For the `syntax` backend, pgfmt
+renders the statement a second time with every identifier's letters replaced
+by `q`: same length, same layout, so the tokens that differ between the two
+renderings are the identifiers. Statements left as they were keep their
+original spelling.
 
 ## Dialects
 
@@ -70,9 +83,8 @@ package pgfmt
 
 ## Open questions
 
-- The two backends do not share a style yet: the `syntax` backend writes
-  lowercase keywords, libpg_query uppercase. A file formatted with `auto`
-  mixes them.
+- The two backends share keyword case, not layout: the `syntax` backend puts
+  commas at the start of lines, libpg_query at the end.
 - libpg_query's deparse normalises some spellings (for example, it may write
   a cast differently). Those changes pass verification, since the normal form
   is the same, but may not be wanted.

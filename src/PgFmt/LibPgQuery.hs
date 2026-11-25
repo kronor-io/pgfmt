@@ -168,6 +168,9 @@ data Token = Token
     { start :: Int
     , end :: Int
     , isComment :: Bool
+    , isKeyword :: Bool
+    -- ^ Spelled like a keyword. Unreserved keywords can also be identifiers
+    -- (@name@, @type@), which the scanner cannot tell apart.
     }
     deriving stock (Eq, Show)
 
@@ -178,6 +181,7 @@ tokens result =
         { start = fromIntegral (t ^. Pg.start)
         , end = fromIntegral (t ^. Pg.end)
         , isComment = t ^. Pg.token `elem` [Pg.SQL_COMMENT, Pg.C_COMMENT]
+        , isKeyword = t ^. Pg.keywordKind /= Pg.NO_KEYWORD
         }
     | t <- result ^. Pg.tokens
     ]

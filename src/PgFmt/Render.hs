@@ -7,11 +7,13 @@ module PgFmt.Render (
     Dialect (..),
     FormatError (..),
     formatStatement,
+    renderIdentifiersMasked,
     formatSql,
 )
 where
 
 import Data.Char (toLower)
+import Data.Generics (everywhere, mkT)
 import Data.List.NonEmpty qualified as NE
 import Data.Maybe (catMaybes)
 import Data.Text (Text)
@@ -103,6 +105,25 @@ formatStatement dialect sql =
         Right ast ->
             let formatted = renderStrict (layoutPretty layoutOpts (renderPreparableStmt ast))
              in roundTrip dialect ast formatted
+
+
+-- | What 'formatStatement' renders, with every unquoted identifier's
+-- characters replaced by @q@ and nothing else changed. That keeps each
+-- identifier's length (so the layout, and the token stream, are the same as
+-- 'formatStatement''s) and survives the renderer lower-casing what it inlines:
+-- a token whose text differs between the two renderings is an identifier.
+-- That is how "PgFmt.File" tells keywords from identifiers spelled like
+-- keywords (@name@, @type@, @value@) when it changes keyword case.
+renderIdentifiersMasked :: Dialect -> Text -> Either FormatError Text
+renderIdentifiersMasked dialect sql =
+    case parseStmt dialect (T.strip sql) of
+        Left err -> Left (Unsupported err)
+        Right ast ->
+            Right (renderStrict (layoutPretty layoutOpts (renderPreparableStmt (everywhere (mkT mask) ast))))
+  where
+    mask = \case
+        Ast.UnquotedIdent t -> Ast.UnquotedIdent (T.map (const 'q') t)
+        quoted -> quoted
 
 
 -- | Format the SQL of a hasql-th quasiquote. qqIndent is the 0-based column of

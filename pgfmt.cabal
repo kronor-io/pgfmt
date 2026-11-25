@@ -58,6 +58,7 @@ library
     , postgresql-syntax  ==0.5.0.3.0.*
     , prettyprinter
     , proto-lens
+    , syb
     , text               >=2.0
     , text-builder
 

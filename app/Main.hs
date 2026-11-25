@@ -43,10 +43,19 @@ cli = do
                 <> showDefaultWith (const "plain")
                 <> help "Accept hasql-th's extensions ($1 :: int8?, $Record {..}) in the syntax backend"
             )
+    keywordCase <-
+        option
+            (eitherReader parseKeywordCase)
+            ( long "keyword-case"
+                <> metavar "lower|upper"
+                <> value Lower
+                <> showDefaultWith (const "lower")
+                <> help "How to spell keywords in every formatted statement, whichever backend laid it out"
+            )
     indentSize <- option auto (long "indent" <> metavar "N" <> value defaultPrettyOptions.indentSize <> showDefault <> help "libpg_query backend: spaces per indent level")
     maxLineLength <- option auto (long "width" <> metavar "N" <> value defaultPrettyOptions.maxLineLength <> showDefault <> help "libpg_query backend: line length to wrap lists at")
     files <- many (strArgument (metavar "FILE..." <> help "Files to format in place; none, or -, reads stdin and writes stdout"))
-    pure Cli{check, verbose, options = Options{backend, dialect, pretty = PrettyOptions{indentSize, maxLineLength}}, files}
+    pure Cli{check, verbose, options = Options{backend, dialect, keywordCase, pretty = PrettyOptions{indentSize, maxLineLength}}, files}
 
 
 parseBackend :: String -> Either String Backend
@@ -55,6 +64,13 @@ parseBackend = \case
     "syntax" -> Right Syntax
     "libpg-query" -> Right LibPgQuery
     other -> Left ("unknown backend " <> other)
+
+
+parseKeywordCase :: String -> Either String KeywordCase
+parseKeywordCase = \case
+    "lower" -> Right Lower
+    "upper" -> Right Upper
+    other -> Left ("unknown keyword case " <> other)
 
 
 parseDialect :: String -> Either String Dialect

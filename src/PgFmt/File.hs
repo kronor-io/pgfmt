@@ -7,6 +7,7 @@
 -- after must match. That check is independent of either backend's own.
 module PgFmt.File (
     Backend (..),
+    KeywordCase (..),
     Options (..),
     defaultOptions,
     Outcome (..),
@@ -42,9 +43,16 @@ data Backend
     deriving stock (Eq, Show)
 
 
+-- | How every formatted statement spells its keywords, whichever backend
+-- laid it out. Identifiers are never touched.
+data KeywordCase = Lower | Upper
+    deriving stock (Eq, Show)
+
+
 data Options = Options
     { backend :: Backend
     , dialect :: Dialect
+    , keywordCase :: KeywordCase
     , pretty :: PrettyOptions
     }
     deriving stock (Eq, Show)
@@ -55,6 +63,7 @@ defaultOptions =
     Options
         { backend = Auto
         , dialect = PlainSql
+        , keywordCase = Lower
         , pretty = LibPgQuery.defaultPrettyOptions
         }
 
@@ -186,11 +195,15 @@ formatOne opts source toks stmt =
                     case attempt of
                         Left outcome -> pure (done outcome Nothing)
                         Right (used, formatted0) -> do
-                            formatted <- endLineComment =<< indentContinuation column formatted0
-                            verdict <- verify stmt.raw (TE.encodeUtf8 formatted) (countComments code)
-                            pure case verdict of
-                                Nothing -> done (FormattedBy used) (Just formatted)
-                                Just reason -> done (Failed reason) Nothing
+                            cased <- applyKeywordCase opts used body formatted0
+                            case cased of
+                                Left reason -> pure (done (Failed reason) Nothing)
+                                Right formatted1 -> do
+                                    formatted <- endLineComment =<< indentContinuation column formatted1
+                                    verdict <- verify stmt.raw (TE.encodeUtf8 formatted) (countComments code)
+                                    pure case verdict of
+                                        Nothing -> done (FormattedBy used) (Just formatted)
+                                        Just reason -> done (Failed reason) Nothing
   where
     keep a b reason =
         Replacement
@@ -229,6 +242,60 @@ runBackend opts body interiorComments = case opts.backend of
                 pure case printed of
                     Left err -> Left (Kept ("libpg_query could not deparse it: " <> err.message))
                     Right formatted -> Right (LibPgQuery, T.strip formatted)
+
+-- | Spell the keywords of a backend's output in the chosen case.
+--
+-- Telling keywords from identifiers spelled like keywords (@name@, @type@):
+-- libpg_query writes keywords in upper case and unquoted identifiers in lower
+-- case, so its upper-case keyword tokens are keywords. For the syntax backend,
+-- the statement is rendered again
+-- with its identifiers masked ('Render.renderIdentifiersMasked'); the tokens
+-- that differ between the two renderings are identifiers.
+applyKeywordCase :: Options -> Backend -> ByteString -> Text -> IO (Either Text Text)
+applyKeywordCase opts used body formatted = do
+    let bytes = TE.encodeUtf8 formatted
+    scanned <- LibPgQuery.scan bytes
+    case scanned of
+        Left err -> pure (Left ("formatted SQL does not scan: " <> err.message))
+        Right result -> do
+            let toks = LibPgQuery.tokens result
+                textOf src t = decode (BS.take (t.end - t.start) (BS.drop t.start src))
+            keywords <- case used of
+                Syntax -> case Render.renderIdentifiersMasked opts.dialect (decode body) of
+                    Left _ -> pure (Left "could not render the statement's identifiers")
+                    Right marked -> do
+                        let markedBytes = TE.encodeUtf8 marked
+                        markedScan <- LibPgQuery.scan markedBytes
+                        pure case markedScan of
+                            Right m
+                                | let markedToks = LibPgQuery.tokens m
+                                , length markedToks == length toks ->
+                                    Right
+                                        [ t
+                                        | (t, t') <- zip toks markedToks
+                                        , t.isKeyword
+                                        , textOf bytes t == textOf markedBytes t'
+                                        ]
+                            _ -> Left "could not tell keywords from identifiers"
+                _ ->
+                    pure . Right $
+                        [ t
+                        | t <- toks
+                        , t.isKeyword
+                        , let word = textOf bytes t
+                        , T.toUpper word == word
+                        ]
+            pure (rewrite bytes textOf <$> keywords)
+  where
+    recase = case opts.keywordCase of
+        Lower -> T.toLower
+        Upper -> T.toUpper
+    rewrite bytes textOf keywords =
+        let go pos [] = [decode (BS.drop pos bytes)]
+            go pos (t : ts) =
+                decode (BS.take (t.start - pos) (BS.drop pos bytes)) : recase (textOf bytes t) : go t.end ts
+         in T.concat (go 0 keywords)
+
 
 -- | Indent every line but the first by this many spaces, except lines that
 -- start inside a token (a multi-line string or function body), whose text
