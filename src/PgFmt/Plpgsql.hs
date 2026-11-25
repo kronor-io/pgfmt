@@ -33,7 +33,8 @@ import Data.Maybe (mapMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
-import Lens.Micro ((^.))
+import Data.ProtoLens (defMessage)
+import Lens.Micro (over, (&), (.~), (^.))
 import PgFmt.LibPgQuery (Token (..))
 import PgFmt.LibPgQuery qualified as LibPgQuery
 import PgQuery qualified as Pg
@@ -54,32 +55,50 @@ data Target = Target
 -- bug. The result is the statement with its new body, 'Nothing' when nothing
 -- changed (or the statement is not a PL/pgSQL function), or 'Left' why the
 -- new body was refused.
+--
+-- Three checks guard the new body: the statement must still parse to the
+-- same tree apart from the body string; the body's PL/pgSQL parse must match
+-- once line numbers are dropped and queries are compared by normal form; and
+-- the body's comments must be the same, in the same order (PL/pgSQL's parse
+-- drops them, so the second check cannot see them).
 formatBodies ::
     (Int -> ByteString -> IO (Either Text (Maybe Text))) ->
     ByteString ->
+    Pg.RawStmt ->
     IO (Either Text (Maybe ByteString))
-formatBodies layOut stmt = do
-    parsed <- LibPgQuery.parsePlpgsql stmt
-    range <- bodyRange stmt
-    case (parsed >>= decodeJson, range) of
-        (Right [fn], Just (bodyStart, bodyEnd)) -> do
-            let body = slice bodyStart bodyEnd stmt
-                located = mapMaybe (locate body) (targets fn)
-            laidOut <- traverse (layOutOne body) located
-            case sequence laidOut of
-                Left reason -> pure (Left reason)
-                Right edits -> case [e | Just e <- edits] of
-                    [] -> pure (Right Nothing)
-                    changes -> do
-                        let newBody = splice body changes
-                            newStmt = BS.take bodyStart stmt <> newBody <> BS.drop bodyEnd stmt
-                        same <- samePlpgsql stmt newStmt
-                        pure case same of
-                            Nothing -> Right (Just newStmt)
-                            Just reason -> Left ("PL/pgSQL body: " <> reason)
-        -- Not a PL/pgSQL function, one libpg_query cannot compile, or a body
-        -- this pass cannot find: leave it.
-        _ -> pure (Right Nothing)
+formatBodies layOut stmt raw = case functionBody raw of
+    Nothing -> pure (Right Nothing)
+    Just bodyText -> do
+        parsed <- LibPgQuery.parsePlpgsql stmt
+        range <- bodyRange stmt (TE.encodeUtf8 bodyText)
+        case (parsed >>= decodeJson, range) of
+            (Right [fn], Just (bodyStart, bodyEnd)) -> do
+                let body = slice bodyStart bodyEnd stmt
+                bodyScan <- LibPgQuery.scan body
+                case bodyScan of
+                    Left _ -> pure (Right Nothing)
+                    Right scanResult -> do
+                        let located = locateAll body (LibPgQuery.tokens scanResult) (targets fn)
+                        laidOut <- traverse (layOutOne body) located
+                        case sequence laidOut of
+                            Left reason -> pure (Left reason)
+                            Right edits -> case [e | Just e <- edits] of
+                                [] -> pure (Right Nothing)
+                                changes -> do
+                                    let newBody = splice body changes
+                                        newStmt = BS.take bodyStart stmt <> newBody <> BS.drop bodyEnd stmt
+                                    checks <-
+                                        sequence
+                                            [ sameOutsideBody raw bodyText newStmt
+                                            , samePlpgsql stmt newStmt
+                                            , sameComments body newBody
+                                            ]
+                                    pure case [r | Just r <- checks] of
+                                        [] -> Right (Just newStmt)
+                                        reason : _ -> Left ("PL/pgSQL body: " <> reason)
+            -- One libpg_query cannot compile, or a body this pass cannot find:
+            -- leave it.
+            _ -> pure (Right Nothing)
   where
     layOutOne body (start, end, column) = do
         result <- layOut column (slice start end body)
@@ -98,23 +117,85 @@ decodeJson bytes = case Aeson.eitherDecodeStrict bytes of
     Left err -> Left LibPgQuery.LibPgQueryError{message = T.pack err, cursor = 0}
 
 
--- | The byte range of the function body: the inside of the statement's one
--- dollar-quoted string. Bodies in single quotes, and statements with more
--- than one dollar-quoted string, are not handled.
-bodyRange :: ByteString -> IO (Maybe (Int, Int))
-bodyRange stmt = do
+-- | The body of a @CREATE FUNCTION@: the one string of its @AS@ clause.
+functionBody :: Pg.RawStmt -> Maybe Text
+functionBody raw = do
+    cfs <- raw ^. Pg.stmt . Pg.maybe'createFunctionStmt
+    [item] <- Just (concatMap asItems (cfs ^. Pg.options))
+    str <- item ^. Pg.maybe'string
+    Just (str ^. Pg.sval)
+  where
+    asItems o = case o ^. Pg.maybe'defElem of
+        Just d | d ^. Pg.defname == "as", Just l <- d ^. Pg.arg . Pg.maybe'list -> l ^. Pg.items
+        _ -> []
+
+
+-- | Replace the body of a @CREATE FUNCTION@.
+setFunctionBody :: Text -> Pg.RawStmt -> Pg.RawStmt
+setFunctionBody body = over (Pg.stmt . Pg.createFunctionStmt . Pg.options . traverse) replace
+  where
+    replace o = case o ^. Pg.maybe'defElem of
+        Just d
+            | d ^. Pg.defname == "as" ->
+                o & Pg.defElem . Pg.arg . Pg.list . Pg.items .~ [defMessage & Pg.string . Pg.sval .~ body]
+        _ -> o
+
+
+-- | The byte range of the function body: the inside of the one dollar-quoted
+-- string of the statement whose contents are exactly the body. A body in
+-- single quotes, or a dollar-quoted argument default or @SET@ value spelled
+-- the same as the body, is not handled.
+bodyRange :: ByteString -> ByteString -> IO (Maybe (Int, Int))
+bodyRange stmt body = do
     scanned <- LibPgQuery.scan stmt
     pure case scanned of
         Right result
-            | [t] <- filter dollarQuoted (LibPgQuery.tokens result)
-            , Just tagEnd <- BS.elemIndex 36 (BS.drop (t.start + 1) stmt) ->
-                -- The tag is @$tag$@: from t.start to the second @$@.
-                let tagLen = tagEnd + 2
-                 in Just (t.start + tagLen, t.end - tagLen)
+            | [r] <- mapMaybe inner (LibPgQuery.tokens result)
+            , uncurry slice r stmt == body ->
+                Just r
         _ -> Nothing
   where
-    dollarQuoted t = not t.isComment && BS.take 1 (BS.drop t.start stmt) == "$" && BS.take 1 (BS.drop (t.end - 1) stmt) == "$"
-            && t.end - t.start >= 4
+    -- The inside of a dollar-quoted string token: @$tag$...$tag$@.
+    inner t
+        | t.isComment = Nothing
+        | BS.take 1 (BS.drop t.start stmt) /= "$" = Nothing
+        | BS.take 1 (BS.drop (t.end - 1) stmt) /= "$" = Nothing
+        | t.end - t.start < 4 = Nothing
+        | otherwise = do
+            tagEnd <- BS.elemIndex 36 (BS.drop (t.start + 1) stmt)
+            let tagLen = tagEnd + 2
+            if t.start + tagLen <= t.end - tagLen
+                then Just (t.start + tagLen, t.end - tagLen)
+                else Nothing
+
+
+-- | 'Nothing' when the new statement is the old one with only its body
+-- changed.
+sameOutsideBody :: Pg.RawStmt -> Text -> ByteString -> IO (Maybe Text)
+sameOutsideBody raw oldBody newStmt = do
+    reparsed <- LibPgQuery.parse newStmt
+    case reparsed of
+        Right tree | [newRaw] <- tree ^. Pg.stmts -> do
+            before <- LibPgQuery.canonical raw
+            after <- LibPgQuery.canonical (setFunctionBody oldBody newRaw)
+            pure case (before, after) of
+                (Right b, Right a) | a == b -> Nothing
+                _ -> Just "the statement changed outside its body"
+        _ -> pure (Just "the statement does not parse")
+
+
+-- | 'Nothing' when both bodies hold the same comments in the same order.
+sameComments :: ByteString -> ByteString -> IO (Maybe Text)
+sameComments before after = do
+    a <- comments before
+    b <- comments after
+    pure if a == b && a /= Nothing then Nothing else Just "comments changed"
+  where
+    comments bytes = do
+        scanned <- LibPgQuery.scan bytes
+        pure case scanned of
+            Right r -> Just [slice t.start t.end bytes | t <- LibPgQuery.tokens r, t.isComment]
+            Left _ -> Nothing
 
 
 -- | The statements of a function to lay out.
@@ -141,24 +222,41 @@ targets = go
         _ -> Nothing
 
 
--- | Where a target's text is in the body, and the indentation of the line it
--- starts on.
-locate :: ByteString -> Target -> Maybe (Int, Int, Int)
-locate body t = do
-    lineStart <- nthLineStart t.lineNo
-    let (before, rest) = BS.breakSubstring t.query (BS.drop lineStart body)
-    if BS.null rest
-        then Nothing
-        else do
-            let start = lineStart + BS.length before
-                startOfLine = maybe 0 (+ 1) (BS.elemIndexEnd 10 (BS.take start body))
-                column = BS.length (BC.takeWhile (== ' ') (BS.drop startOfLine body))
-            Just (start, start + BS.length t.query, column)
+-- | Where each target's text is in the body, and the indentation of the line
+-- it starts on. A match must start and end on token boundaries of the body,
+-- outside comments and strings, and not overlap an earlier match; the first
+-- such occurrence from the start of the target's line is taken. Targets with
+-- no such occurrence are left out.
+locateAll :: ByteString -> [Token] -> [Target] -> [(Int, Int, Int)]
+locateAll body toks = go []
   where
+    starts = [t.start | t <- toks, not t.isComment]
+    ends = [t.end | t <- toks, not t.isComment]
     lineStarts = 0 : map (+ 1) (BS.elemIndices 10 body)
     nthLineStart n
         | n >= 1, (s : _) <- drop (n - 1) lineStarts = Just s
         | otherwise = Nothing
+    go _ [] = []
+    go used (t : ts) = case nthLineStart t.lineNo >>= \from -> firstMatch used t.query from of
+        Just m@(s, e, _) -> m : go ((s, e) : used) ts
+        Nothing -> go used ts
+    firstMatch used q from
+        | BS.null q = Nothing
+        | otherwise =
+            let (before, rest) = BS.breakSubstring q (BS.drop from body)
+                start = from + BS.length before
+                end = start + BS.length q
+             in if BS.null rest
+                    then Nothing
+                    else
+                        if start `elem` starts
+                            && end `elem` ends
+                            && not (any (\(s, e) -> start < e && s < end) used)
+                            then Just (start, end, indentOf start)
+                            else firstMatch used q (start + 1)
+    indentOf start =
+        let startOfLine = maybe 0 (+ 1) (BS.elemIndexEnd 10 (BS.take start body))
+         in BS.length (BC.takeWhile (== ' ') (BS.drop startOfLine body))
 
 
 -- | Replace byte ranges of the body, in order.

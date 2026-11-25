@@ -100,28 +100,39 @@ data FileResult = FileResult
 -- | Format every statement of a file. 'Left' when PostgreSQL cannot parse the
 -- file at all (it is invalid SQL, or holds psql meta-commands).
 formatFile :: Options -> Text -> IO (Either LibPgQueryError FileResult)
-formatFile opts text = do
-    let source = TE.encodeUtf8 text
-    parsed <- LibPgQuery.parse source
-    scanned <- LibPgQuery.scan source
-    case (,) <$> parsed <*> scanned of
-        Left err -> pure (Left err)
-        Right (tree, scanResult) -> do
-            let toks = LibPgQuery.tokens scanResult
-            let stmts = LibPgQuery.statements source tree
-            results <- traverse (formatOne opts source toks) stmts
-            let r = assemble source results
-            -- Each statement was checked on its own; check the file as a
-            -- whole too, which also catches text between statements that a
-            -- rewrite changed the meaning of (a semicolon commented out).
-            same <- sameStatements (map (.expected) results) r.output
-            pure . Right $ case same of
-                Nothing -> r
-                Just reason ->
-                    FileResult
-                        { output = text
-                        , reports = r.reports <> [StatementReport{line = 1, outcome = Failed ("the formatted file " <> reason)}]
-                        }
+formatFile opts text
+    -- libpg_query parses strings as with standard_conforming_strings on, the
+    -- default since PostgreSQL 9.1. A file that turns it off reads
+    -- backslashes in '...' strings differently from how pgfmt would verify
+    -- them, so it is left alone.
+    | "standard_conforming_strings" `T.isInfixOf` T.toLower text =
+        pure . Right $
+            FileResult
+                { output = text
+                , reports = [StatementReport{line = 1, outcome = Kept "the file sets standard_conforming_strings"}]
+                }
+    | otherwise = do
+        let source = TE.encodeUtf8 text
+        parsed <- LibPgQuery.parse source
+        scanned <- LibPgQuery.scan source
+        case (,) <$> parsed <*> scanned of
+            Left err -> pure (Left err)
+            Right (tree, scanResult) -> do
+                let toks = LibPgQuery.tokens scanResult
+                let stmts = LibPgQuery.statements source tree
+                results <- traverse (formatOne opts source toks) stmts
+                let r = assemble source results
+                -- Each statement was checked on its own; check the file as a
+                -- whole too, which also catches text between statements that a
+                -- rewrite changed the meaning of (a semicolon commented out).
+                same <- sameStatements (map (.expected) results) r.output
+                pure . Right $ case same of
+                    Nothing -> r
+                    Just reason ->
+                        FileResult
+                            { output = text
+                            , reports = r.reports <> [StatementReport{line = 1, outcome = Failed ("the formatted file " <> reason)}]
+                            }
 
 
 -- | 'Nothing' when the file parses to statements with these normal forms.
@@ -195,7 +206,7 @@ formatOne opts source toks stmt =
             if null code
                 then pure (done (Kept "only comments") Nothing stmt.raw)
                 else do
-                    bodies <- Plpgsql.formatBodies (formatEmbedded opts) body
+                    bodies <- Plpgsql.formatBodies (formatEmbedded opts) body stmt.raw
                     withBody <- case bodies of
                         Left reason -> pure (Left reason)
                         Right Nothing -> pure (Right (body, stmt.raw, False))

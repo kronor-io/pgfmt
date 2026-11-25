@@ -23,6 +23,8 @@ data Expected
       Output Text
     | -- | Unchanged, each statement kept for this reason.
       Unchanged Text
+    | -- | Output containing each of these, with no statement failed.
+      Contains [Text]
     | -- | Not valid SQL.
       Invalid
 
@@ -107,6 +109,41 @@ cases =
         , expected = Output "create function f(p int) returns void language plpgsql as $$\ndeclare\n    v int;\nbegin\n    select a into v from t where id = p;\n    update t\n    set\n        a = 1\n      , b = 2\n    where id = p;\n    if v > 1 then\n        delete from t\n        where id = p;\n    end if;\nend;\n$$;\n"
         }
     , Case
+        { name = "PL/pgSQL: a dollar-quoted argument default is not taken for the body"
+        , backend = LibPgQuery
+        , keywordCase = Lower
+        , input = "create function f(p text default $$update t set a=1$$)\nreturns text language plpgsql\nas 'begin update t set a=1; return p; end';\n"
+        , expected = Contains ["'update t set a=1'"]
+        }
+    , Case
+        { name = "PL/pgSQL: a default spelled like the body leaves the body alone"
+        , backend = Auto
+        , keywordCase = Lower
+        , input = "create function f(p text default $$begin update t set a=1; return p; end$$)\nreturns text language plpgsql\nas $$begin update t set a=1; return p; end$$;\n"
+        , expected = Contains ["as $$begin update t set a=1; return p; end$$"]
+        }
+    , Case
+        { name = "standard_conforming_strings off leaves the file alone"
+        , backend = LibPgQuery
+        , keywordCase = Lower
+        , input = "set standard_conforming_strings = off;\nselect '\\n';\n"
+        , expected = Unchanged "the file sets standard_conforming_strings"
+        }
+    , Case
+        { name = "PL/pgSQL: SQL in a comment is not taken for the statement"
+        , backend = Auto
+        , keywordCase = Lower
+        , input = "create function f() returns void language plpgsql as $$\nbegin\n /* update t set a=1 */ update t set a=1;\nend;\n$$;\n"
+        , expected = Contains ["/* update t set a=1 */ update t\n set a = 1;"]
+        }
+    , Case
+        { name = "PL/pgSQL: identical statements on one line are each matched once"
+        , backend = Auto
+        , keywordCase = Lower
+        , input = "create function f() returns void language plpgsql as $$\nbegin\n update t set a=1; update t set a=1;\nend;\n$$;\n"
+        , expected = Contains [" update t\n set a = 1; update t\n set a = 1;"]
+        }
+    , Case
         { name = "not SQL"
         , backend = Auto
         , keywordCase = Lower
@@ -139,6 +176,12 @@ runCase failWith c = do
         (Unchanged reason, Right r) -> do
             unless (r.output == c.input) $ failWith c.name ("changed:\n" <> r.output)
             unless (all ((== Kept reason) . (.outcome)) r.reports) $
+                failWith c.name ("reports: " <> T.pack (show r.reports))
+        (Contains needles, Right r) -> do
+            mapM_
+                (\n -> unless (n `T.isInfixOf` r.output) $ failWith c.name ("missing " <> T.pack (show n) <> " in:\n" <> r.output))
+                needles
+            unless (not (any (isFailed . (.outcome)) r.reports)) $
                 failWith c.name ("reports: " <> T.pack (show r.reports))
         (Output out, Right r) -> do
             unless (r.output == out) $

@@ -28,7 +28,8 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Text.Encoding.Error qualified as TE
-import Foreign (Ptr, alloca, free, nullPtr, peek)
+import Control.Exception (finally, mask_)
+import Foreign (Ptr, alloca, free, nullPtr, peek, poke)
 import Foreign.C (CInt (..), CSize (..), CString)
 import Lens.Micro ((&), (.~), (^.))
 import PgQuery qualified as Pg
@@ -66,14 +67,19 @@ foreign import ccall safe "pgfmt_deparse"
 runOut :: Out -> IO (Either LibPgQueryError ByteString)
 runOut call =
     alloca \pOut -> alloca \pLen -> alloca \pCursor -> do
-        rc <- call pOut pLen pCursor
-        buf <- peek pOut
-        len <- peek pLen
-        cur <- peek pCursor
-        bytes <-
-            if buf == nullPtr
-                then pure BS.empty
-                else BS.packCStringLen (buf, fromIntegral len) <* free buf
+        poke pOut nullPtr
+        -- Masked from the call until the buffer is copied and freed, so an
+        -- asynchronous exception cannot leave it allocated.
+        (rc, bytes, cur) <- mask_ do
+            rc <- call pOut pLen pCursor
+            buf <- peek pOut
+            len <- peek pLen
+            cur <- peek pCursor
+            bytes <-
+                if buf == nullPtr
+                    then pure BS.empty
+                    else BS.packCStringLen (buf, fromIntegral len) `finally` free buf
+            pure (rc, bytes, cur)
         pure
             if rc == 0
                 then Right bytes
