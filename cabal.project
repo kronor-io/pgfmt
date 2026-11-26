@@ -1,5 +1,10 @@
 packages: .
 
+-- .hie files, which the lint (scripts/check lint) reads; editors' language
+-- servers use them too.
+package pgfmt
+  ghc-options: -fwrite-ide-info
+
 allow-newer:
   *:base,
   *:bytestring,

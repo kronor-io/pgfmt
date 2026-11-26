@@ -20,8 +20,10 @@ repository github-kronor-haskell-packages
 constraints:
   postgresql-syntax == 0.5.0.3.0.*
 
+-- ghc-options: .hie files, as in cabal.project.
 package pgfmt
   flags: +kronor-syntax
+  ghc-options: -fwrite-ide-info
 
 packages: .
 
