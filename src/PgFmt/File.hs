@@ -377,7 +377,6 @@ applyKeywordCase opts used body formatted = do
         Left err -> pure (Left ("formatted SQL does not scan: " <> err.message))
         Right result -> do
             let toks = LibPgQuery.tokens result
-                textOf src t = decode (BS.take (t.end - t.start) (BS.drop t.start src))
             keywords <- case used of
                 Syntax -> case Render.renderIdentifiersMasked opts.dialect (decode body) of
                     Left _ -> pure (Left "could not render the statement's identifiers")
@@ -386,33 +385,53 @@ applyKeywordCase opts used body formatted = do
                         markedScan <- LibPgQuery.scan markedBytes
                         pure case markedScan of
                             Right m
-                                | let markedToks = LibPgQuery.tokens m
-                                , length markedToks == length toks ->
-                                    Right
-                                        [ t
-                                        | (t, t') <- zip toks markedToks
-                                        , t.isKeyword
-                                        , textOf bytes t == textOf markedBytes t'
-                                        ]
+                                | Just ks <- unmaskedKeywords bytes toks markedBytes (LibPgQuery.tokens m) -> Right ks
                             _ -> Left "could not tell keywords from identifiers"
-                _ ->
-                    pure . Right $
-                        [ t
-                        | t <- toks
-                        , t.isKeyword
-                        , let word = textOf bytes t
-                        , T.toUpper word == word
-                        ]
-            pure (rewrite bytes textOf <$> keywords)
+                _ -> pure (Right (upperCaseKeywords bytes toks))
+            pure (recaseTokens opts.keywordCase bytes <$> keywords)
+
+
+-- | The keyword tokens of a rendering that its rendering with identifiers
+-- masked spells the same; 'Nothing' when the two do not have the same
+-- tokens.
+unmaskedKeywords :: ByteString -> [Token] -> ByteString -> [Token] -> Maybe [Token]
+unmaskedKeywords bytes toks markedBytes markedToks
+    | length markedToks /= length toks = Nothing
+    | otherwise =
+        Just
+            [ t
+            | (t, t') <- zip toks markedToks
+            , t.isKeyword
+            , tokenText bytes t == tokenText markedBytes t'
+            ]
+
+
+-- | The keyword tokens libpg_query wrote in upper case: its keywords, as it
+-- writes unquoted identifiers in lower case.
+upperCaseKeywords :: ByteString -> [Token] -> [Token]
+upperCaseKeywords bytes toks =
+    [ t
+    | t <- toks
+    , t.isKeyword
+    , let word = tokenText bytes t
+    , T.toUpper word == word
+    ]
+
+
+-- | The text with these tokens, in order, in the keyword case.
+recaseTokens :: KeywordCase -> ByteString -> [Token] -> Text
+recaseTokens keywordCase bytes keywords = T.concat (go 0 keywords)
   where
-    recase = case opts.keywordCase of
+    recase = case keywordCase of
         Lower -> T.toLower
         Upper -> T.toUpper
-    rewrite bytes textOf keywords =
-        let go pos [] = [decode (BS.drop pos bytes)]
-            go pos (t : ts) =
-                decode (BS.take (t.start - pos) (BS.drop pos bytes)) : recase (textOf bytes t) : go t.end ts
-         in T.concat (go 0 keywords)
+    go pos [] = [decode (BS.drop pos bytes)]
+    go pos (t : ts) =
+        decode (BS.take (t.start - pos) (BS.drop pos bytes)) : recase (tokenText bytes t) : go t.end ts
+
+
+tokenText :: ByteString -> Token -> Text
+tokenText src t = decode (BS.take (t.end - t.start) (BS.drop t.start src))
 
 
 -- | Indent every line but the first by this many spaces, except lines that
