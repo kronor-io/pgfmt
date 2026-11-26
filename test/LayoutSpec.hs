@@ -84,6 +84,8 @@ expected =
     , (False, "insert into t (a, b) values (1, 2) on conflict (a) do update set b = excluded.b where t.b <> excluded.b returning *", "insert into t\n    (a, b)\nvalues\n    (1, 2)\non conflict (a)\ndo update set\n    b = excluded.b\nwhere t.b <> excluded.b\nreturning *")
     , (False, "values (1, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'), (2, 'b')", "values\n    ( 1\n    , 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'\n    ),\n    ( 2\n    , 'b'\n    )")
     , (False, "values (1, -- one\n 'a'), (2, 'b')", "values\n    ( 1 -- one\n    , 'a'\n    ),\n    ( 2\n    , 'b'\n    )")
+    , -- A blank line between rows is kept; one after "values" is not.
+      (False, "values\n\n(1), (2),\n\n(3), -- x\n\n(4)", "values\n    (1),\n    (2),\n\n    (3), -- x\n\n    (4)")
     , -- Dollar-quoted strings are kept as written; plain ones continued over
       -- lines are joined.
       (False, "select $$it's$$, $f$ a\n b $f$, 'a'\n  'b'", "select\n    $$it's$$\n  , $f$ a\n b $f$\n  , 'ab'")

@@ -7,6 +7,9 @@
   row's values still go one per line. Lookup-table inserts now read as a
   table. On Kronor's migrations this changes 267 files, only in line breaks
   and spacing.
+* A blank line between two `values` rows is kept, so groups of rows stay
+  apart, as in `i18n.invoice_page`, the one file on Kronor's migrations it
+  changes.
 
 * The `syntax` backend lays out plain SQL statements with comments inside
   them, instead of leaving them as they are (or, with `--backend auto`, to
