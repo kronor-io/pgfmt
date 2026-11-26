@@ -140,6 +140,8 @@ expected =
     , -- Comments on arguments; a comment among the clauses after the body
       -- puts each after the first on a line of its own.
       (False, "create function f(\n  a int, -- the a\n  b int -- the b\n) returns int as $$ select a + b $$ language sql\n  -- why\n  immutable", "create function f(\n    a int, -- the a\n    b int -- the b\n)\n    returns int as\n$$ select a + b $$ language sql\n    -- why\n    immutable")
+    , -- The opening quote lines up with the closing one on its own line.
+      (False, "create function f() returns int as $$\n      select 1\n    $$ language sql", "create function f()\n    returns int as\n    $$\n      select 1\n    $$ language sql")
     , -- A SQL-standard body: its statements laid out under begin atomic.
       (True, "create function f(x int) returns bigint language sql begin atomic; select count(*) from t where a = x; end", "CREATE FUNCTION f(x INT)\n    RETURNS BIGINT\n    LANGUAGE SQL\nBEGIN ATOMIC;\n    SELECT count(*)\n    FROM t\n    WHERE a = x;\nEND")
     , (False, "create function f(x int) returns int language sql immutable return x + 1", "create function f(x int)\n    returns int\n    language sql\n    immutable\nreturn x + 1")

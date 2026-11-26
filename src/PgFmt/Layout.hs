@@ -39,6 +39,7 @@
 -- identifiers, quoted or not, are never changed.
 module PgFmt.Layout (
     formatStatement,
+    formatStatementAt,
 ) where
 
 import Control.Monad (forM, forM_, unless, when, zipWithM)
@@ -77,7 +78,14 @@ import Unsafe.Coerce (unsafeCoerce)
 -- something this renderer does not handle (a comment it cannot place among
 -- them).
 formatStatement :: Bool -> ByteString -> IO (Either Text Text)
-formatStatement upperKeywords sql = do
+formatStatement upperKeywords = formatStatementAt upperKeywords 0
+
+
+-- | 'formatStatement' for a statement that starts at this column of its
+-- line, where the caller indents its other lines to: what lines up with
+-- text the layout cannot move (a function body's closing quote) needs it.
+formatStatementAt :: Bool -> Int -> ByteString -> IO (Either Text Text)
+formatStatementAt upperKeywords column sql = do
     parsed <- L.parse sql
     scanned <- L.scan sql
     let laid = render parsed scanned
@@ -97,7 +105,7 @@ formatStatement upperKeywords sql = do
         (_, Left err) -> Left err.message
         (Right tree, Right scan) -> case tree ^. Pg.stmts of
             [rawStmt] | Just stmt <- rawStmt ^. Pg.maybe'stmt -> do
-                let env = mkEnv upperKeywords sql scan stmt
+                let env = (mkEnv upperKeywords sql scan stmt){column}
                 (doc, st) <- runStateT (runReaderT (statement stmt) env) St{consumed = IS.empty, memo = Map.empty}
                 let unplaced = [i | (i, t) <- IM.toList env.toks, t.text == "(", not (IS.member i st.consumed)]
                 unless (null unplaced) (Left "a parenthesis pgfmt cannot place")
@@ -153,6 +161,9 @@ data Env = Env
     -- it is written quoted, and whether unquoted.
     , cmts :: IM.IntMap [Cmt]
     -- ^ The comments after each token (by index), in order.
+    , column :: Int
+    -- ^ The column the statement starts at, which its lines are indented
+    -- to.
     , tightTypes :: Bool
     -- ^ Types written with no space before their modifiers, @numeric(10, 2)@,
     -- as in DDL.
@@ -200,6 +211,7 @@ mkEnv upper sql scan stmt =
         , upper
         , names = Map.fromListWith (\(a, b) (c, d) -> (a || c, b || d)) (mapMaybe' nameOf ts)
         , cmts = IM.fromListWith (flip (++)) (comments (-1) 0 (scan ^. Pg.tokens))
+        , column = 0
         , tightTypes = False
         , blankLineBefore = IS.fromList (blanks 0 Nothing (scan ^. Pg.tokens))
         }
@@ -5023,6 +5035,17 @@ createFunction f = do
         Nothing -> do
             asK <- kw "as"
             bodyBrk <- brk mempty (bodyAt + 1)
+            -- The opening quote lines up with the closing one, when that
+            -- starts a line of its own.
+            col <- asks (.column)
+            bodyTok <- tokM (bodyAt + 1)
+            let closeCol = case bodyTok of
+                    Just tk | asEnd == bodyAt + 2, Just tag <- dollarTag tk.text -> do
+                        let lastLine = snd (T.breakOnEnd "\n" tk.text)
+                            (spaces, rest) = T.span (== ' ') lastLine
+                        if T.isInfixOf "\n" tk.text && rest == tag then Just (T.length spaces) else Nothing
+                    _ -> Nothing
+                openIndent = maybe mempty (\c -> pretty (T.replicate (max 0 (c - col)) " ")) closeCol
             body <- looseRun (bodyAt + 1) asEnd
             afterDs <- forM after \(s, e) -> looseRun s e
             -- The clauses after the body follow it on its last line; with a
@@ -5033,7 +5056,7 @@ createFunction f = do
                     then forM (zip (drop 1 after) (drop 1 afterDs)) \((s, _), d) -> (<> d) <$> brk mempty s
                     else pure [" " <> d | d <- drop 1 afterDs]
             let firstAfter = maybe mempty (" " <>) (listToMaybe afterDs)
-            pure (" " <> asK <> bodyBrk <> body <> firstAfter <> (if commented then nest indentSize (mconcat rest) else mconcat rest))
+            pure (" " <> asK <> bodyBrk <> openIndent <> body <> firstAfter <> (if commented then nest indentSize (mconcat rest) else mconcat rest))
     pure (header <+> name <> argsD <> nest indentSize clauseLines <> bodyD)
   where
     firstName j = do
@@ -5102,6 +5125,13 @@ standardBody b at end = case node b of
                     m <- matchOf j
                     maybe (unsupported "an unclosed parenthesis") (\c -> semicolons (c + 1) stop) m
                 _ -> semicolons (j + 1) stop
+
+
+-- | A dollar-quoted string's tag, as in @$@ or @$body$@.
+dollarTag :: Text -> Maybe Text
+dollarTag t = case T.uncons t of
+    Just ('$', rest) | (tag, r) <- T.breakOn "$" rest, not (T.null r) -> Just ("$" <> tag <> "$")
+    _ -> Nothing
 
 
 -- | The longest @create function name(args)@ line that keeps its arguments

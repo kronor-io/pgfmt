@@ -355,8 +355,9 @@ $$;
 
 The function's head is laid out too: its arguments on the first line, or
 one per line if they do not fit, each clause before the body on a line of
-its own with `as` ending the last, and the body from the start of the next
-line. The clauses after the body stay on its last line. A SQL-standard body
+its own with `as` ending the last, and the body on the next line, its
+opening quote lined up with its closing one. The clauses after the body stay
+on its last line. A SQL-standard body
 (`begin atomic ... end`) has its statements laid out like any others.
 
 The statements it formats are `insert`, `update`, `delete` and `select` run
