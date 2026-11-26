@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.1.0
 
 * The safety check compares each statement's parse tree, source positions
   aside, instead of SQL deparsed from it: two different trees the deparser
@@ -17,6 +17,8 @@
 * Builds against Hackage's postgresql-syntax. The hasql-th dialect is upstream
   hasql-th's; the `kronor-syntax` flag (`cabal.project.kronor`, or the flake's
   `pgfmt-kronor`) adds the Haskell targets and param fields of Kronor's fork.
+* Builds with the same haskell.nix and nixpkgs as sqiff and sqint, so they
+  share one GHC 9.12.4 in the kronor-open cache.
 
 ## 0.1.0.1
 
