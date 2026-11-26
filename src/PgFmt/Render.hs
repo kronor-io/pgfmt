@@ -821,11 +821,11 @@ renderExprForceSubqueryWrap = \case
     e -> renderExprMaybeWrap e
 
 
--- | Multi-line keyword-form pseudo-function. Each constructor knows the
--- syntactic separator between its operands (commas for @coalesce@,
--- @greatest@, @least@; @ as @ for @cast@/@treat@; @ from @ for @extract@,
--- @substring@, @trim@; @ in @ for @position@; @ placing @ /@ from @/@ for @
--- for @overlay@), and uses 'renderArgRows' for the comma-separated cases.
+-- | Multi-line keyword-form pseudo-function: @coalesce@, @greatest@,
+-- @least@ and @nullif@ with one argument per row ('renderArgRows'), and
+-- @cast@ and @treat@ with @expr as type@ on a line of its own. The others
+-- (@extract@, @substring@, @trim@, @position@, @overlay@, ...) are written
+-- inline whatever their length.
 renderFuncExprCommonSubexprWrapped :: Ast.FuncExprCommonSubexpr -> Doc ann
 renderFuncExprCommonSubexprWrapped = \case
     Ast.CoalesceFuncExprCommonSubexpr exprs ->
@@ -850,10 +850,6 @@ renderFuncExprCommonSubexprWrapped = \case
             <> nest indentSize (hardline <> renderExprMaybeWrap expr <+> "as" <+> renderTypename tn)
             <> hardline
             <> ")"
-    -- Keyword-form functions whose argument structure isn't a simple
-    -- comma-separated list. We render them inline; if length is the
-    -- problem we fall back to the inline renderer (which is short
-    -- compared to other cases).
     other -> renderFuncExprCommonSubexpr other
 
 
@@ -1623,8 +1619,8 @@ renderRecordFields fields =
 -- | Wrap-aware renderer for hasql-th @$Foo@ / @$Foo{...}@ target
 -- expressions used inside record fields. Renders inline first; if the
 -- inline form exceeds 'inlineLengthThreshold' AND the target is a
--- record-shaped @$Foo{...}@ (or a function-shaped @$f(...)@ that
--- contains a wrap-eligible record), expands to multi-line via
+-- record-shaped @$Foo{...}@ or a function-shaped @$f(...)@ with
+-- arguments, expands to multi-line via
 -- 'renderHsTargetElWrappedInner' so each nested level adds exactly
 -- @indentSize@ of indent rather than cascading rightward.
 renderHsTargetElMaybeWrap :: Ast.HsTargetEl -> Doc ann
