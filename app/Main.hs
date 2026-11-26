@@ -163,4 +163,3 @@ run args path = do
 
 say :: Text -> IO ()
 say = TIO.hPutStrLn stderr
-

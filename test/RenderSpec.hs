@@ -2,8 +2,6 @@
 
 module Main where
 
-import Data.Char (isAlpha)
-
 import Data.String.Interpolate (__i)
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -20,25 +18,16 @@ import Prelude
 parseAst :: Text -> Maybe Ast.PreparableStmt
 parseAst t = either (const Nothing) Just (Ast.parse settings (T.strip t))
   where
-    settings =
-        mconcat
-            [ Ast.nullabilityMarkers True
+    settings = Ast.nullabilityMarkers True <> kronorSettings
+
+
+-- | Kronor's extensions to hasql-th's syntax, in a build with them.
+kronorSettings :: Ast.Settings
 #ifdef KRONOR_SYNTAX
-            , Ast.haskellTargets True
-            , Ast.haskellParamFields True
+kronorSettings = Ast.haskellTargets True <> Ast.haskellParamFields True
+#else
+kronorSettings = mempty
 #endif
-            ]
-
-
--- | Whether a fixture uses the extensions only Kronor's fork of
--- postgresql-syntax parses: Haskell targets (@$Record {..}@, @$f (a, b)@) and
--- param fields (@$1.$field@), all of them a @$@ followed by a letter. The
--- fixtures have no dollar-quoted strings, the one other place that happens.
-usesKronorSyntax :: Text -> Bool
-usesKronorSyntax t = any extension (zip chars (drop 1 chars))
-  where
-    chars = T.unpack t
-    extension (c, d) = c == '$' && (isAlpha d || d == '_')
 
 
 -- | The fixtures this build can parse: all of them with the @kronor-syntax@
@@ -47,7 +36,7 @@ runnable :: [TestCase]
 #ifdef KRONOR_SYNTAX
 runnable = tests
 #else
-runnable = filter (\t -> not (usesKronorSyntax t.input)) tests
+runnable = filter (\t -> t.syntax == PlainSyntax) tests
 #endif
 
 
@@ -56,7 +45,15 @@ data TestCase = TestCase
     , qqCol :: Int
     , input :: Text
     , expected :: Text
+    , syntax :: FixtureSyntax
     }
+
+
+-- | Whether a fixture uses the extensions only Kronor's fork of
+-- postgresql-syntax parses: Haskell targets (@$Record {..}@, @$f (a, b)@) and
+-- param fields (@$1.$field@).
+data FixtureSyntax = PlainSyntax | KronorSyntax
+    deriving stock (Eq)
 
 
 -- | Prepend @n@ spaces to each non-blank line.
@@ -81,7 +78,13 @@ mkCase nm col rawInput rawExpected =
         , qqCol = col
         , input = "\n" <> indent col rawInput
         , expected = "\n" <> indent (col + 4) rawExpected
+        , syntax = PlainSyntax
         }
+
+
+-- | 'mkCase' for a fixture in Kronor's syntax.
+mkKronorCase :: Text -> Int -> Text -> Text -> TestCase
+mkKronorCase nm col rawInput rawExpected = (mkCase nm col rawInput rawExpected){syntax = KronorSyntax}
 
 
 tests :: [TestCase]
@@ -91,6 +94,7 @@ tests =
         , qqCol = 4
         , input = " update deployer.config set is_frozen = $1::bool where id = 42 "
         , expected = " update deployer.config set is_frozen = $1::bool where id = 42 "
+        , syntax = PlainSyntax
         }
     , mkCase
         "[02] SELECT ... WHERE: inlined FROM is split out, trailing LIMIT moves to its own line, ANDs are indented under WHERE"
@@ -177,7 +181,7 @@ tests =
             where transaction_release.merchant_id = $1::bigint
               and transaction_release.id = $2::bigint
         |]
-    , mkCase
+    , mkKronorCase
         "[06] hasql-th $CanBeEncrypted(...) splice is preserved verbatim in a select list"
         4
         [__i|
@@ -196,7 +200,7 @@ tests =
             where merchant_id = $1::bigint
               and id = $2::bigint
         |]
-    , mkCase
+    , mkKronorCase
         "[07] hasql-th $Name{...} record syntax: inlined braces are reformatted to Haskell-style leading-comma record"
         8
         [__i|
@@ -216,7 +220,7 @@ tests =
             from cde.tds_details
             where id = $1::uuid
         |]
-    , mkCase
+    , mkKronorCase
         "[08] hasql-th $1.$field record access survives inside BETWEEN x AND y and coalesce() args"
         8
         [__i|
@@ -498,7 +502,7 @@ tests =
             set statuses = $1::text[]?
             where id = $2::uuid
         |]
-    , mkCase
+    , mkKronorCase
         "[25] array[...] literal preserves hasql-th $1.$field access inside its element expressions"
         4
         [__i|
@@ -519,7 +523,7 @@ tests =
                 , created_by := $5::text?
             )
         |]
-    , mkCase
+    , mkKronorCase
         "[27] inline subquery's FROM function-call (inside EXISTS (...)) preserves $1.$field in its argument list"
         4
         [__i|
@@ -528,7 +532,7 @@ tests =
         [__i|
             select exists (select 1::int from gen($1.$orgId::bigint, $1.$cursor::text?))::bool
         |]
-    , mkCase
+    , mkKronorCase
         "[28] UNION ALL inside EXISTS (...) wraps when the inline form gets long; each arm preserves $1.$field"
         4
         [__i|
@@ -543,7 +547,7 @@ tests =
                 from gen2($1.$orgId::bigint, $1.$cursor::text?)
             )::bool
         |]
-    , mkCase
+    , mkKronorCase
         "[29] EXTRACT(field FROM $1.$field::type) preserves the hasql-th field access inside the extracted expression"
         4
         [__i|
@@ -1061,7 +1065,7 @@ tests =
                 , value_date
                 )
         |]
-    , mkCase
+    , mkKronorCase
         "[57] hasql-th nested $Record{...} fields expand multi-line when an inner record's inline form is long"
         8
         [__i|
@@ -1147,7 +1151,7 @@ tests =
                 end
             where id = $1::uuid
         |]
-    , mkCase
+    , mkKronorCase
         "[60] hasql-th $Foo (...) splice wraps multi-line when inline form is long; SQL inside its args (CASE, parens, casts) wraps the same way it would at the top-level SELECT-target position"
         4
         [__i|
@@ -1301,11 +1305,12 @@ main = do
 
 runTest :: TestCase -> (Bool, Text)
 runTest TestCase{name, qqCol, input, expected} =
-    -- 'formatSql' now returns 'Left' on AST mismatch; treating that as a
+    -- 'formatSql' returns 'Left' on AST mismatch; treating that as a
     -- failure is the whole point of this test suite — if the formatter ever
     -- emits semantically-different SQL, the test reports it as such.
-    let actual = either ("ERROR: " <>) id (formatSql qqCol (T.stripEnd input))
-        stringEq = T.stripEnd actual == T.stripEnd expected
+    let result = formatSql qqCol (T.stripEnd input)
+        actual = either ("ERROR: " <>) id result
+        stringEq = either (const False) (\a -> T.stripEnd a == T.stripEnd expected) result
         -- Semantic guard on the test fixture itself: the hand-written
         -- `expected` must parse to the same AST as `input`. Catches a
         -- fixture-authoring mistake even before the formatter runs.
@@ -1316,11 +1321,12 @@ runTest TestCase{name, qqCol, input, expected} =
             -- yield the same AST as `input`. Catches a renderer that drops
             -- or alters a clause but still emits valid SQL (the
             -- `DISTINCT ON (...)` regression that motivated this guard).
-        astFormatterEq = case (parseAst input, parseAst actual) of
-            (Just a, Just b) -> a == b
+        astFormatterEq = case (parseAst input, parseAst <$> result) of
+            (Just a, Right (Just b)) -> a == b
             _ -> True
         pass = stringEq && astFixtureEq && astFormatterEq
         reason
+            | Left _ <- result = "the formatter refused it"
             | not stringEq = "string mismatch"
             | not astFixtureEq = "AST mismatch: expected fixture is not semantically equivalent to input"
             | not astFormatterEq = "AST mismatch: formatter output is not semantically equivalent to input"

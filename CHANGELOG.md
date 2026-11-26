@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+* `PgFmt.Layout` is split into modules along its sections: `Monad`,
+  `Comments`, `Locations`, `Parens`, `Names`, `Expr`, `Dml` and `Ddl`.
+  `docs/readability.md` says how the code is meant to read, and
+  `scripts/check` checks what a tool can: fourmolu, and pgfmt's hopinion rules
+  in `lint/`. CI runs it. The output is unchanged.
+
 * The `syntax` backend lays out more of the tables, indexes and `alter
   table`s it used to leave to `libpg-query`: an index's `include (...)` and
   `with (...)`, on its `on` line; `alter constraint ... deferrable`; `primary

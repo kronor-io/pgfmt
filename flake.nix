@@ -16,9 +16,12 @@
     hackage-nix.flake = false;
     kronor-haskell-packages.url = "github:kronor-io/kronor-haskell-packages/repo";
     kronor-haskell-packages.flake = false;
+    # The commit lint/cabal.project names.
+    hopinion.url = "github:NorfairKing/hopinion/48eb343a003ab05f7df0c5844ba37897ab35f2e7";
+    hopinion.flake = false;
   };
 
-  outputs = { self, haskell-nix, hackage-nix, kronor-haskell-packages, nixpkgs }:
+  outputs = { self, haskell-nix, hackage-nix, kronor-haskell-packages, nixpkgs, hopinion }:
     let
       systems = [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" ];
       forAllSystems = nixpkgs.lib.genAttrs systems;
@@ -88,9 +91,27 @@
 
           project = mkProject "cabal.project";
           kronor = mkProject "cabal.project.kronor";
+
+          # pgfmt's hopinion rules (lint/). Built with pgfmt's compiler, since
+          # hopinion reads the .hie and .hi files that compiler writes.
+          lintProject = pkgs.haskell-nix.cabalProject' {
+            src = ./lint;
+            compiler-nix-name = "ghc9124";
+            # hopinion commits its .cabal files; without its package.yaml files
+            # haskell.nix reads those rather than running hpack, which this
+            # haskell.nix does not provide.
+            inputMap = {
+              "https://github.com/NorfairKing/hopinion/48eb343a003ab05f7df0c5844ba37897ab35f2e7" = pkgs.runCommand "hopinion-source" { } ''
+                cp -r ${hopinion} $out
+                chmod -R u+w $out
+                find $out -name package.yaml -delete
+              '';
+            };
+          };
+          pgfmt-lint = lintProject.hsPkgs.pgfmt-lint.components.exes.pgfmt-lint;
         in
         {
-          inherit pkgs project;
+          inherit pkgs project pgfmt-lint;
           pgfmt = project.pgfmt.components.exes.pgfmt;
           pgfmt-kronor = kronor.pgfmt.components.exes.pgfmt;
           checks = project.pgfmt.checks // {
@@ -113,6 +134,7 @@
       packages = forAllSystems (system: rec {
         pgfmt = bySystem.${system}.pgfmt;
         pgfmt-kronor = bySystem.${system}.pgfmt-kronor;
+        pgfmt-lint = bySystem.${system}.pgfmt-lint;
         default = pgfmt;
       });
 
@@ -133,12 +155,13 @@
       });
 
       devShells = forAllSystems (system:
-        let inherit (bySystem.${system}) pkgs project; in {
+        let inherit (bySystem.${system}) pkgs project pgfmt-lint; in {
           default = project.shellFor {
             tools.cabal = { version = "3.16.1.0"; };
+            # scripts/check runs these.
             tools.fourmolu = { version = "0.19.0.1"; };
             tools.hlint = { version = "3.10"; };
-            buildInputs = [ pkgs.libpg_query ];
+            buildInputs = [ pkgs.libpg_query pgfmt-lint ];
           };
         });
     };

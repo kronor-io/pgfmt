@@ -20,20 +20,20 @@ module PgFmt.LibPgQuery (
     canonical,
 ) where
 
-import Data.ByteString (ByteString)
-import Data.ByteString qualified as BS
-import Data.ByteString.Unsafe (unsafeUseAsCStringLen)
+import Control.Exception (finally, mask_)
 import Data.Aeson (Value (..))
 import Data.Aeson qualified as Aeson
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KeyMap
+import Data.ByteString (ByteString)
+import Data.ByteString qualified as BS
+import Data.ByteString.Unsafe (unsafeUseAsCStringLen)
 import Data.Foldable (toList)
 import Data.ProtoLens (Message, decodeMessage, encodeMessage)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Text.Encoding.Error qualified as TE
-import Control.Exception (finally, mask_)
 import Foreign (Ptr, alloca, free, nullPtr, peek, poke)
 import Foreign.C (CInt (..), CSize (..), CString)
 import Lens.Micro ((^.))
@@ -101,7 +101,7 @@ withSql :: ByteString -> (CString -> IO a) -> IO a
 withSql sql = BS.useAsCString sql
 
 
-decodeProto :: (Message msg) => Either LibPgQueryError ByteString -> Either LibPgQueryError msg
+decodeProto :: Message msg => Either LibPgQueryError ByteString -> Either LibPgQueryError msg
 decodeProto = \case
     Left err -> Left err
     Right bytes -> case decodeMessage bytes of

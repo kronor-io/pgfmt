@@ -16,3 +16,4 @@ module PgFmt (
 
 import PgFmt.File
 import PgFmt.Render (Dialect (..), FormatError (..), formatSql, formatStatement)
+

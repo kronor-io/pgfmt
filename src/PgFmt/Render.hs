@@ -55,6 +55,8 @@ instance ToList Ast.Indirection Ast.IndirectionEl where toL (Ast.Indirection xs)
 #ifdef KRONOR_SYNTAX
 instance ToList Ast.HsTargetList Ast.HsTargetEl where toL (Ast.HsTargetList xs) = NE.toList xs
 #endif
+
+
 instance ToList Ast.SetClauseList Ast.SetClause where toL (Ast.SetClauseList xs) = NE.toList xs
 instance ToList Ast.SortClause Ast.SortBy where toL (Ast.SortClause xs) = NE.toList xs
 instance ToList Ast.RowsfromList Ast.RowsfromItem where toL (Ast.RowsfromList xs) = NE.toList xs
@@ -202,14 +204,16 @@ settings = settingsFor HasqlTh
 settingsFor :: Dialect -> Ast.Settings
 settingsFor = \case
     PlainSql -> mempty
-    HasqlTh ->
-        mconcat
-            [ Ast.nullabilityMarkers True
+    HasqlTh -> Ast.nullabilityMarkers True <> kronorSettings
+
+
+-- | Kronor's extensions to hasql-th's syntax, in a build with them.
+kronorSettings :: Ast.Settings
 #ifdef KRONOR_SYNTAX
-            , Ast.haskellTargets True
-            , Ast.haskellParamFields True
+kronorSettings = Ast.haskellTargets True <> Ast.haskellParamFields True
+#else
+kronorSettings = mempty
 #endif
-            ]
 
 
 -- | Parse a statement in the given dialect.
@@ -409,16 +413,25 @@ renderIndirection = mconcat . map renderIndirectionEl . toL
 
 
 renderIndirectionEl :: Ast.IndirectionEl -> Doc ann
+#ifdef KRONOR_SYNTAX
 renderIndirectionEl = \case
     Ast.AttrNameIndirectionEl ident -> "." <> renderIdent ident
     Ast.AllIndirectionEl -> ".*"
     Ast.ExprIndirectionEl expr -> "[" <> renderExpr expr <> "]"
-    Ast.SliceIndirectionEl mFrom mTo ->
-        "[" <> maybe mempty renderExpr mFrom <> ":" <> maybe mempty renderExpr mTo <> "]"
-#ifdef KRONOR_SYNTAX
+    Ast.SliceIndirectionEl mFrom mTo -> renderSlice mFrom mTo
     -- Kronor extension: a Haskell field selector on a @$n@ placeholder.
     Ast.HsAttrNameIndirectionEl t -> ".$" <> pretty t
+#else
+renderIndirectionEl = \case
+    Ast.AttrNameIndirectionEl ident -> "." <> renderIdent ident
+    Ast.AllIndirectionEl -> ".*"
+    Ast.ExprIndirectionEl expr -> "[" <> renderExpr expr <> "]"
+    Ast.SliceIndirectionEl mFrom mTo -> renderSlice mFrom mTo
 #endif
+
+
+renderSlice :: Maybe Ast.AExpr -> Maybe Ast.AExpr -> Doc ann
+renderSlice mFrom mTo = "[" <> maybe mempty renderExpr mFrom <> ":" <> maybe mempty renderExpr mTo <> "]"
 
 
 renderIdent :: Ast.Ident -> Doc ann
@@ -821,11 +834,11 @@ renderExprForceSubqueryWrap = \case
     e -> renderExprMaybeWrap e
 
 
--- | Multi-line keyword-form pseudo-function. Each constructor knows the
--- syntactic separator between its operands (commas for @coalesce@,
--- @greatest@, @least@; @ as @ for @cast@/@treat@; @ from @ for @extract@,
--- @substring@, @trim@; @ in @ for @position@; @ placing @ /@ from @/@ for @
--- for @overlay@), and uses 'renderArgRows' for the comma-separated cases.
+-- | Multi-line keyword-form pseudo-function: @coalesce@, @greatest@,
+-- @least@ and @nullif@ with one argument per row ('renderArgRows'), and
+-- @cast@ and @treat@ with @expr as type@ on a line of its own. The others
+-- (@extract@, @substring@, @trim@, @position@, @overlay@, ...) are written
+-- inline whatever their length.
 renderFuncExprCommonSubexprWrapped :: Ast.FuncExprCommonSubexpr -> Doc ann
 renderFuncExprCommonSubexprWrapped = \case
     Ast.CoalesceFuncExprCommonSubexpr exprs ->
@@ -850,10 +863,6 @@ renderFuncExprCommonSubexprWrapped = \case
             <> nest indentSize (hardline <> renderExprMaybeWrap expr <+> "as" <+> renderTypename tn)
             <> hardline
             <> ")"
-    -- Keyword-form functions whose argument structure isn't a simple
-    -- comma-separated list. We render them inline; if length is the
-    -- problem we fall back to the inline renderer (which is short
-    -- compared to other cases).
     other -> renderFuncExprCommonSubexpr other
 
 
@@ -1315,14 +1324,21 @@ renderFromClauseInline fromList =
     "from " <> commaJoin (map renderTableRefInline (toL fromList))
 
 
+-- | A plain select's targets, each on one line: hasql-th's, with Kronor's
+-- extensions, in a build with them.
+#ifdef KRONOR_SYNTAX
+normalTargetsInline :: Ast.HsTargetList -> [Doc ann]
+normalTargetsInline tl = map renderHsTargetElInline (toL tl)
+#else
+normalTargetsInline :: Ast.TargetList -> [Doc ann]
+normalTargetsInline tl = map renderTargetEl (toL tl)
+#endif
+
+
 renderTargetingInline :: Maybe Ast.Targeting -> Doc ann
 renderTargetingInline = \case
     Nothing -> "select"
-#ifdef KRONOR_SYNTAX
-    Just (Ast.NormalTargeting tl) -> "select " <> commaJoin (map renderHsTargetElInline (toL tl))
-#else
-    Just (Ast.NormalTargeting tl) -> "select " <> commaJoin (map renderTargetEl (toL tl))
-#endif
+    Just (Ast.NormalTargeting tl) -> "select " <> commaJoin (normalTargetsInline tl)
     Just (Ast.AllTargeting Nothing) -> "select all"
     Just (Ast.AllTargeting (Just tl)) -> "select all " <> commaJoin (map renderTargetEl (toL tl))
     Just (Ast.DistinctTargeting mExprs tl) ->
@@ -1330,7 +1346,6 @@ renderTargetingInline = \case
                 Nothing -> "select distinct"
                 Just exprs -> "select distinct on (" <> inline render exprs <> ")"
          in prefix <> " " <> commaJoin (map renderTargetEl (toL tl))
-
 
 #ifdef KRONOR_SYNTAX
 -- | Render a hasql-th target element on a single line. Used in inline subquery
@@ -1423,15 +1438,22 @@ renderSimpleSelect = \case
             ]
 
 
+-- | A plain select's target list after @prefix@: hasql-th's, with Kronor's
+-- extensions, in a build with them.
+#ifdef KRONOR_SYNTAX
+renderNormalTargets :: Doc ann -> Ast.HsTargetList -> Doc ann
+renderNormalTargets = renderHsTargetList
+#else
+renderNormalTargets :: Doc ann -> Ast.TargetList -> Doc ann
+renderNormalTargets = renderSqlTargetList
+#endif
+
+
 -- | Render the SELECT targeting (column list).
 renderTargeting :: Maybe Ast.Targeting -> Doc ann
 renderTargeting = \case
     Nothing -> "select"
-#ifdef KRONOR_SYNTAX
-    Just (Ast.NormalTargeting tl) -> renderHsTargetList "select" tl
-#else
-    Just (Ast.NormalTargeting tl) -> renderSqlTargetList "select" tl
-#endif
+    Just (Ast.NormalTargeting tl) -> renderNormalTargets "select" tl
     Just (Ast.AllTargeting Nothing) -> "select all"
     Just (Ast.AllTargeting (Just tl)) -> renderSqlTargetList "select all" tl
     Just (Ast.DistinctTargeting mExprs tl) ->
@@ -1439,7 +1461,6 @@ renderTargeting = \case
                 Nothing -> "select distinct"
                 Just exprs -> "select distinct on (" <> inline render exprs <> ")"
          in renderSqlTargetList prefix tl
-
 
 #ifdef KRONOR_SYNTAX
 -- | Block-list layout for hasql-th target lists. First item lands at one
@@ -1525,7 +1546,6 @@ renderBlockListWith prefix renderItem items =
     commaPad = pretty (T.replicate (max 0 (indentSize - 2)) " ")
     renderRow 0 item = firstPad <> renderItem item
     renderRow _ item = commaPad <> ", " <> renderItem item
-
 
 #ifdef KRONOR_SYNTAX
 -- | Multi-line `$Name{...}` record layout:
@@ -1623,8 +1643,8 @@ renderRecordFields fields =
 -- | Wrap-aware renderer for hasql-th @$Foo@ / @$Foo{...}@ target
 -- expressions used inside record fields. Renders inline first; if the
 -- inline form exceeds 'inlineLengthThreshold' AND the target is a
--- record-shaped @$Foo{...}@ (or a function-shaped @$f(...)@ that
--- contains a wrap-eligible record), expands to multi-line via
+-- record-shaped @$Foo{...}@ or a function-shaped @$f(...)@ with
+-- arguments, expands to multi-line via
 -- 'renderHsTargetElWrappedInner' so each nested level adds exactly
 -- @indentSize@ of indent rather than cascading rightward.
 renderHsTargetElMaybeWrap :: Ast.HsTargetEl -> Doc ann
