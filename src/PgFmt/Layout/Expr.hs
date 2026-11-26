@@ -1105,19 +1105,47 @@ asSubexpr e
         _ -> pure Nothing
 
 
-isWrapEligible :: E -> R Bool
-isWrapEligible e = do
+-- | What an expression is, as the wrapped layout tells expressions apart:
+-- in parentheses, under a @::@ cast, an ordinary call, one of
+-- postgresql-syntax's common subexpressions, or something else.
+data Shape
+    = InParens E (Maybe Pg.A_Indirection)
+    | UnderCast E Pg.TypeName
+    | Application Pg.FuncCall
+    | CommonSubexpr Subexpr
+    | OtherShape
+
+
+-- | An expression's 'Shape'. All four classifiers run, in this order,
+-- whichever matches: they are not pure. 'inParens' and 'asColonCast' take
+-- the child expression, which places the parentheses around it, and
+-- 'asFuncApp' and 'asSubexpr' classify calls, which places a call's own
+-- parenthesis. Stopping at the first match would leave some unplaced, or
+-- change which refusal comes first.
+shapeOf :: E -> R Shape
+shapeOf e = do
     paren <- inParens e
     cast <- asColonCast e
     app <- asFuncApp e
     subexpr <- asSubexpr e
-    case (paren, cast, app, subexpr) of
-        (Just (inner, _), _, _, _) -> isWrapEligible inner
-        (_, Just (inner, _), _, _) -> isWrapEligible inner
-        (_, _, Just _, _) -> pure True
-        (_, _, _, Just SubValue) -> pure False
-        (_, _, _, Just _) -> pure True
-        _ -> case node e.en of
+    pure case (paren, cast, app, subexpr) of
+        (Just (inner, ind), _, _, _) -> InParens inner ind
+        (_, Just (inner, tn), _, _) -> UnderCast inner tn
+        (_, _, Just f, _) -> Application f
+        (_, _, _, Just sub) -> CommonSubexpr sub
+        _ -> OtherShape
+
+
+isWrapEligible :: E -> R Bool
+isWrapEligible e = do
+    shape <- shapeOf e
+    case shape of
+        InParens inner _ -> isWrapEligible inner
+        UnderCast inner _ -> isWrapEligible inner
+        Application _ -> pure True
+        CommonSubexpr SubValue -> pure False
+        CommonSubexpr _ -> pure True
+        OtherShape -> case node e.en of
             _ | e.lv > 0 -> pure False
             Just (Pg.Node'AArrayExpr a) -> do
                 keyword <- arrayKeyword a
@@ -1227,19 +1255,16 @@ exprMaybeWrap e = do
 
 exprWrapped :: E -> R D
 exprWrapped e = do
-    paren <- inParens e
-    cast <- asColonCast e
-    app <- asFuncApp e
-    subexpr <- asSubexpr e
-    case (paren, cast, app, subexpr) of
-        (Just (inner, ind), _, _, _) -> inParensWrapped e inner ind
-        (_, Just (inner, tn), _, _) -> do
+    shape <- shapeOf e
+    case shape of
+        InParens inner ind -> inParensWrapped e inner ind
+        UnderCast inner tn -> do
             d <- exprWrapped inner
             t <- typeName tn
             pure (d <> "::" <> t)
-        (_, _, Just f, _) -> funcApplicationWrapped e f
-        (_, _, _, Just sub) -> subexprWrapped e sub
-        _ -> case node e.en of
+        Application f -> funcApplicationWrapped e f
+        CommonSubexpr sub -> subexprWrapped e sub
+        OtherShape -> case node e.en of
             Just (Pg.Node'AArrayExpr a) -> do
                 keyword <- arrayKeyword a
                 if keyword
