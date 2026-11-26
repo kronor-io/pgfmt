@@ -2,7 +2,7 @@
 -- far, and the small helpers every part of the layout uses.
 module PgFmt.Layout.Monad where
 
-import Control.Monad.Except (MonadError (throwError))
+import Control.Monad.Except (MonadError (catchError, throwError))
 import Control.Monad.Reader (ReaderT, asks)
 import Control.Monad.State.Strict (StateT, gets, modify')
 import Data.ByteString (ByteString)
@@ -132,6 +132,16 @@ type D = Doc ()
 
 unsupported :: Text -> R a
 unsupported = throwError
+
+
+-- | A part of a node that must be there.
+req :: Text -> Maybe a -> R a
+req what = maybe (unsupported (what <> " with a part missing")) pure
+
+
+-- | What a check finds, or 'Nothing' where it fails.
+attempt :: R a -> R (Maybe a)
+attempt m = (Just <$> m) `catchError` \_ -> pure Nothing
 
 
 mkEnv :: Bool -> ByteString -> Pg.ScanResult -> Pg.Node -> Env

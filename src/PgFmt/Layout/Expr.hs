@@ -99,10 +99,6 @@ core mode e = case node e.en of
 f >=> g = \x -> f x >>= g
 
 
-req :: Text -> Maybe a -> R a
-req what = maybe (unsupported (what <> " with a part missing")) pure
-
-
 columnRef :: Pg.ColumnRef -> R D
 columnRef c = do
     at <- tokAt (fromIntegral (c ^. Pg.location))
