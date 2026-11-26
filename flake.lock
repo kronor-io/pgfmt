@@ -63,11 +63,11 @@
         "nixpkgs-2605": "nixpkgs-2605"
       },
       "locked": {
-        "lastModified": 1795567598,
-        "narHash": "sha256-njbtuH+z4n00vqXD1LcuztzosmX4M3yvvII2uE5Z38E=",
+        "lastModified": 1785745985,
+        "narHash": "sha256-yGu7ZWmHW+HAuk85Og7wwemqwkQYIVrgR2xSFqbjUos=",
         "owner": "kronor-io",
         "repo": "haskell.nix",
-        "rev": "866adaabae8bb4442bf4cab3bc537954514e2134",
+        "rev": "d535b1ad950d14410a9151fc23aa76927a6a82a1",
         "type": "github"
       },
       "original": {
@@ -96,11 +96,11 @@
     },
     "nixpkgs": {
       "locked": {
-        "lastModified": 1795602730,
-        "narHash": "sha256-gZk2JG0mX1TGKiNNzhwEraULk+jxGBH+tEMx88ZE5Tk=",
+        "lastModified": 1791353474,
+        "narHash": "sha256-v72qr4LsSz61tQki/41nHKZKPY6NSeZavtGlAInOCng=",
         "owner": "NixOS",
         "repo": "nixpkgs",
-        "rev": "e49b95784634858c450402d5d9bbb3ea469666d1",
+        "rev": "2efa67fd26b6df417c33e4603185c701f260dd83",
         "type": "github"
       },
       "original": {
