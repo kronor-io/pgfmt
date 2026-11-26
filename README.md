@@ -324,7 +324,7 @@ grant select, insert, update
 ```
 
 Any other DDL goes to `libpg-query`, as does a statement with something
-`syntax` does not handle (`exclude`, `include`, `partition of`, ...):
+`syntax` does not handle (`exclude`, `tablespace`, `attach partition`, ...):
 
 ```sql
 create sequence order_numbers start 1000 cache 10;

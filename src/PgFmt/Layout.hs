@@ -4343,10 +4343,41 @@ createTable :: Pg.CreateStmt -> R D
 createTable c = do
     rv <- req "a create table" (c ^. Pg.maybe'relation)
     when
-        (isJust (c ^. Pg.maybe'partbound) || isJust (c ^. Pg.maybe'ofTypename) || not (null (c ^. Pg.inhRelations)))
+        (isJust (c ^. Pg.maybe'ofTypename) || (not (null (c ^. Pg.inhRelations)) && isNothing (c ^. Pg.maybe'partbound)))
         (unsupported "a create table pgfmt does not lay out")
     (name, relAt, open) <- relationAt rv
     header <- wordsRun 0 relAt
+    if isJust (c ^. Pg.maybe'partbound)
+        then partitionOf c (header <+> name) open
+        else tableBody c (header <+> name) open
+
+
+-- | @create table t partition of p for values ...@: each clause on a line
+-- of its own, at the statement's column.
+partitionOf :: Pg.CreateStmt -> D -> Int -> R D
+partitionOf c head' at = do
+    when
+        (not (null (c ^. Pg.tableElts)) || isJust (c ^. Pg.maybe'partspec))
+        (unsupported "a create table pgfmt does not lay out")
+    parent <- case c ^. Pg.inhRelations of
+        [p] | Just (Pg.Node'RangeVar rv) <- node p -> pure rv
+        _ -> unsupported "a create table pgfmt cannot read"
+    isPartition <- (&&) <$> tokIs at "partition" <*> tokIs (at + 1) "of"
+    (pname, pAt, pAfter) <- relationAt parent
+    unless (isPartition && pAt == at + 2) (unsupported "a create table pgfmt cannot read")
+    w <- wordsRun at pAt
+    end <- (+ 1) <$> lastTok
+    unless (pAfter < end) (unsupported "a create table pgfmt cannot read")
+    bound <- looseRun pAfter end
+    b1 <- brk mempty at
+    b2 <- brk mempty pAfter
+    pure (head' <> b1 <> w <+> pname <> b2 <> bound)
+
+
+-- | A table's columns and constraints, in the parentheses at @open@, and
+-- what follows them.
+tableBody :: Pg.CreateStmt -> D -> Int -> R D
+tableBody c head' open = do
     close <- expectParen open
     let elts = c ^. Pg.tableElts
     starts <- traverse elementStart elts
@@ -4377,7 +4408,7 @@ createTable c = do
             | n == 0 && null cs = "()"
             | otherwise = "(" <> nest indentSize (mconcat lines' <> endComments) <> hardline <> ")"
     tl <- tableTail c (close + 1)
-    pure (header <+> name <+> body <> tl)
+    pure (head' <+> body <> tl)
 
 
 -- | Where a table element starts.
@@ -4486,15 +4517,28 @@ constraintBody before x a b = case x ^. Pg.contype of
         when
             ( not (null (x ^. Pg.including))
                 || not (null (x ^. Pg.options))
-                || not (T.null (x ^. Pg.indexname))
+                || (not (T.null (x ^. Pg.indexname)) && not (null (x ^. Pg.keys)))
                 || not (T.null (x ^. Pg.indexspace))
                 || isJust (x ^. Pg.maybe'whereClause)
                 || x ^. Pg.withoutOverlaps
             )
             (unsupported "a key pgfmt does not lay out")
-        if null (x ^. Pg.keys)
-            then wordsRun a b
-            else do
+        if
+            | not (T.null (x ^. Pg.indexname)) -> do
+                -- @primary key using index i@: a long one breaks before
+                -- @using@.
+                usingAt <- findUsing a
+                w <- wordsRun a usingAt
+                u <- wordsRun usingAt (usingAt + 2)
+                nm <- identAt (usingAt + 2) (x ^. Pg.indexname)
+                t <- tailRun (usingAt + 3) b
+                let rest = u <+> nm <> t
+                pure
+                    if before + len (w <+> rest) <= foreignKeyInlineThreshold
+                        then w <+> rest
+                        else nest indentSize (w <> hardline <> rest)
+            | null (x ^. Pg.keys) -> wordsRun a b
+            | otherwise -> do
                 open <- parenWithin
                 w <- wordsRun a open
                 names <- strsOf (x ^. Pg.keys)
@@ -4538,6 +4582,12 @@ constraintBody before x a b = case x ^. Pg.contype of
         open <- nextParen a
         unless (open < b) (unsupported "a constraint pgfmt cannot read")
         pure open
+    findUsing j
+        | j >= b = unsupported "a key pgfmt cannot read"
+        | otherwise = do
+            u <- tokIs j "using"
+            i <- tokIs (j + 1) "index"
+            if u && i then pure j else findUsing (j + 1)
 
 
 -- | A check constraint's condition, in its parentheses: on one line if
@@ -4754,9 +4804,7 @@ partsBetween a b = go a [a]
 createIndex :: Pg.IndexStmt -> R D
 createIndex ix = do
     when
-        ( not (null (ix ^. Pg.indexIncludingParams))
-            || not (null (ix ^. Pg.options))
-            || not (T.null (ix ^. Pg.tableSpace))
+        ( not (T.null (ix ^. Pg.tableSpace))
             || not (null (ix ^. Pg.excludeOpNames))
         )
         (unsupported "an index pgfmt does not lay out")
@@ -4787,12 +4835,41 @@ createIndex ix = do
         _ -> unsupported "an index column pgfmt cannot read"
     whereAt <- maybe (pure Nothing) (clauseAt [["where"]]) (ix ^. Pg.maybe'whereClause)
     end <- (+ 1) <$> lastTok
-    between <- tailRun (close + 1) (fromMaybe end whereAt)
+    between <- indexTail ix (close + 1) (fromMaybe end whereAt)
     wh <- traverse indexWhere (ix ^. Pg.maybe'whereClause)
     let onLine = onK <+> rel <> usingD <+> "(" <> commaJoin cols <> ")" <> between
     onBreak <- brk mempty (relAt - 1)
     whBreak <- brkAt mempty whereAt
     pure (header <> nameD <> nest indentSize (onBreak <> onLine <> maybe mempty (whBreak <>) wh))
+
+
+-- | What follows an index's columns, before its @where@: @include (a,
+-- b)@, @nulls not distinct@, @with (fastupdate = off)@; with a space
+-- before it, if there is any.
+indexTail :: Pg.IndexStmt -> Int -> Int -> R D
+indexTail ix from to = do
+    included <- forM (ix ^. Pg.indexIncludingParams) \p -> case node p of
+        Just (Pg.Node'IndexElem el) | isNothing (el ^. Pg.maybe'expr) -> pure (el ^. Pg.name)
+        _ -> unsupported "an index pgfmt does not lay out"
+    let go j
+            | j >= to = pure []
+            | otherwise = do
+                w <- tokL j
+                case w of
+                    "include" | not (null included) -> do
+                        k <- kw "include"
+                        (l, after) <- nameList (j + 1) included
+                        ((k <+> l) :) <$> go after
+                    "with" | not (null (ix ^. Pg.options)) -> do
+                        k <- kw "with"
+                        close <- expectParen (j + 1)
+                        o <- relOptions (ix ^. Pg.options)
+                        ((k <+> o) :) <$> go (close + 1)
+                    _ -> do
+                        d <- wordsRun j (j + 1)
+                        (d :) <$> go (j + 1)
+    ds <- go from
+    pure (mconcat [" " <> d | d <- ds])
 
 
 -- | An index column, from token @s@ to before @e@: a column or an
@@ -4866,6 +4943,16 @@ alterCmd c s e = case c ^. Pg.subtype of
             pure (w <+> d)
         _ -> cannot
     t | t `elem` [Pg.AT_DropColumn, Pg.AT_DropConstraint, Pg.AT_ValidateConstraint, Pg.AT_DropNotNull, Pg.AT_SetNotNull, Pg.AT_DropIdentity, Pg.AT_EnableTrig, Pg.AT_DisableTrig, Pg.AT_EnableAlwaysTrig, Pg.AT_EnableReplicaTrig] -> withName Nothing
+    -- @alter constraint c deferrable@: the name is the constraint's.
+    Pg.AT_AlterConstraint -> case def of
+        Just (Pg.Node'AtalterConstraint x) -> do
+            nameAt <- nameToken
+            unless (nameAt < e) cannot
+            w <- wordsRun s nameAt
+            nm <- identAt nameAt (x ^. Pg.conname)
+            t <- tailRun (nameAt + 1) e
+            pure (w <+> nm <> t)
+        _ -> cannot
     Pg.AT_ColumnDefault -> withName (c ^. Pg.maybe'def)
     t | t `elem` [Pg.AT_EnableRowSecurity, Pg.AT_DisableRowSecurity, Pg.AT_ForceRowSecurity, Pg.AT_NoForceRowSecurity, Pg.AT_SetLogged, Pg.AT_SetUnLogged, Pg.AT_EnableTrigAll, Pg.AT_DisableTrigAll, Pg.AT_EnableTrigUser, Pg.AT_DisableTrigUser] -> wordsRun s e
     Pg.AT_AlterColumnType -> case def of
@@ -4890,23 +4977,10 @@ alterCmd c s e = case c ^. Pg.subtype of
         w <- wordsRun s open
         close <- expectParen open
         opts <- case def of
-            Just (Pg.Node'List l) -> forM (l ^. Pg.items) \o -> case node o of
-                Just (Pg.Node'DefElem de) | T.null (de ^. Pg.defnamespace) -> do
-                    at <- tokAt (fromIntegral (de ^. Pg.location))
-                    nm <- identAt at (de ^. Pg.defname)
-                    case de ^. Pg.maybe'arg of
-                        Nothing -> pure nm
-                        Just _ -> do
-                            eq <- tokIs (at + 1) "="
-                            v <- tokM (at + 2)
-                            case v of
-                                Just vt | eq, vt.kind `elem` [Pg.ICONST, Pg.FCONST] -> pure (nm <> " = " <> pretty (T.toLower vt.text))
-                                Just vt | eq, vt.kind == Pg.SCONST -> pure (nm <> " = " <> raw vt.text)
-                                _ -> cannot
-                _ -> cannot
+            Just (Pg.Node'List l) -> relOptions (l ^. Pg.items)
             _ -> cannot
         t' <- tailRun (close + 1) e
-        pure (w <+> "(" <> commaJoin opts <> ")" <> t')
+        pure (w <+> opts <> t')
     _ -> unsupported "an alter table action pgfmt does not lay out"
   where
     def = c ^. Pg.maybe'def >>= node
@@ -5341,3 +5415,29 @@ grantStmt hasOn = do
                 | w `elem` ws -> pure (Just j)
                 | w == "(" -> matchOf j >>= maybe (unsupported "an unclosed parenthesis") (\c -> firstTop ws (c + 1) b)
                 | otherwise -> firstTop ws (j + 1) b
+
+
+-- | Storage options, @(fillfactor = 70, fastupdate = off)@, in their
+-- parentheses, which the caller has placed.
+relOptions :: [Pg.Node] -> R D
+relOptions items = do
+    opts <- forM items \o -> case node o of
+        Just (Pg.Node'DefElem de) | T.null (de ^. Pg.defnamespace) -> do
+            at <- tokAt (fromIntegral (de ^. Pg.location))
+            nm <- identAt at (de ^. Pg.defname)
+            case de ^. Pg.maybe'arg of
+                Nothing -> pure nm
+                Just _ -> do
+                    eq <- tokIs (at + 1) "="
+                    v <- tokM (at + 2)
+                    case v of
+                        Just vt | eq, vt.kind `elem` [Pg.ICONST, Pg.FCONST] -> pure (nm <> " = " <> pretty (T.toLower vt.text))
+                        Just vt | eq, vt.kind == Pg.SCONST -> pure (nm <> " = " <> raw vt.text)
+                        Just vt | eq, vt.isKeyword, vt.kind /= Pg.IDENT -> (\k -> nm <> " = " <> k) <$> kw (T.toLower vt.text)
+                        Just vt | eq, vt.kind == Pg.IDENT, not ("\"" `T.isPrefixOf` vt.text) -> pure (nm <> " = " <> raw vt.text)
+                        _ -> cannot
+        _ -> cannot
+    pure ("(" <> commaJoin opts <> ")")
+  where
+    cannot :: R a
+    cannot = unsupported "a storage option pgfmt cannot read"
