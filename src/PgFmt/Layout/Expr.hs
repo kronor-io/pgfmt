@@ -526,9 +526,17 @@ data Call
       -- argument, in source order; or the comma form.
       Substring Pg.Node [(Text, Pg.Node)]
     | SubstringCommas [Pg.Node]
-    | -- | @trim(both 'x' from y)@: modifier, characters, @from@, strings.
-      Trim (Maybe Text) (Maybe Pg.Node) Bool [Pg.Node]
-    | Overlay Pg.Node Pg.Node Pg.Node (Maybe Pg.Node)
+    | -- | @trim(both 'x' from y)@.
+      Trim
+        { modifier :: Maybe Text
+        -- ^ @both@, @leading@ or @trailing@.
+        , chars :: Maybe Pg.Node
+        -- ^ The characters to trim, before @from@.
+        , hasFrom :: Bool
+        , strings :: [Pg.Node]
+        }
+    | -- | @overlay(x placing y from a for b)@.
+      Overlay {string :: Pg.Node, placing :: Pg.Node, from :: Pg.Node, for :: Maybe Pg.Node}
     | AtTimeZone Pg.Node Pg.Node
 
 
@@ -575,13 +583,13 @@ classifyCall f = do
                             [] -> Nothing
                         hasFrom = "from" `elem` map snd pieces
                     case args of
-                        [s] -> pure (Trim modifier Nothing hasFrom [s])
+                        [s] -> pure Trim{modifier, chars = Nothing, hasFrom, strings = [s]}
                         [s, chars]
-                            | hasFrom -> pure (Trim modifier (Just chars) True [s])
-                            | otherwise -> pure (Trim modifier Nothing False [s, chars])
+                            | hasFrom -> pure Trim{modifier, chars = Just chars, hasFrom = True, strings = [s]}
+                            | otherwise -> pure Trim{modifier, chars = Nothing, hasFrom = False, strings = [s, chars]}
                         _ -> unsupported "a trim pgfmt cannot read"
-                (["pg_catalog", "overlay"], [x, placing, from]) | sqlSyntax -> pure (Overlay x placing from Nothing)
-                (["pg_catalog", "overlay"], [x, placing, from, for]) | sqlSyntax -> pure (Overlay x placing from (Just for))
+                (["pg_catalog", "overlay"], [x, placing, from]) | sqlSyntax -> pure Overlay{string = x, placing, from, for = Nothing}
+                (["pg_catalog", "overlay"], [x, placing, from, for]) | sqlSyntax -> pure Overlay{string = x, placing, from, for = Just for}
                 (["pg_catalog", "timezone"], [zone, x]) | sqlSyntax -> pure (AtTimeZone x zone)
                 _ -> unsupported ("function " <> T.intercalate "." names <> " in SQL syntax")
   where
@@ -675,7 +683,7 @@ callBody mode e = \case
             pure (kd <+> rd)
         pure (spaceJoin (xd : rest))
     SubstringCommas args -> commaJoin <$> traverse (child e.en >=> expr mode) args
-    Trim modifier chars hasFrom strings -> do
+    Trim{modifier, chars, hasFrom, strings} -> do
         md <- maybe (pure mempty) (fmap (<> " ") . kw) modifier
         cd <- maybe (pure Nothing) (fmap Just . (child e.en >=> expr mode)) chars
         sd <- commaJoin <$> traverse (child e.en >=> expr mode) strings
@@ -685,11 +693,11 @@ callBody mode e = \case
                 (Just c, _) -> c <+> fromK <+> sd
                 (Nothing, True) -> fromK <+> sd
                 (Nothing, False) -> sd
-    Overlay x placing from mFor -> do
-        xd <- child e.en x >>= expr mode
+    Overlay{string, placing, from, for} -> do
+        xd <- child e.en string >>= expr mode
         pd <- child e.en placing >>= expr mode
         fd <- child e.en from >>= expr mode
-        forD <- maybe (pure mempty) (\n -> do k <- kw "for"; d <- child e.en n >>= expr mode; pure (" " <> k <+> d)) mFor
+        forD <- maybe (pure mempty) (\n -> do k <- kw "for"; d <- child e.en n >>= expr mode; pure (" " <> k <+> d)) for
         placingK <- kw "placing"
         fromK <- kw "from"
         pure (xd <+> placingK <+> pd <+> fromK <+> fd <> forD)
@@ -717,7 +725,9 @@ callHead f = do
 data Params
     = NoParams
     | Star
-    | Normal (Maybe Bool) [Pg.Node] [Pg.Node]
+    | -- | The arguments, with @distinct@ or @all@ before them if written,
+      -- and an @order by@ among them.
+      Normal Quantifier [Pg.Node] [Pg.Node]
     | Variadic [Pg.Node] Pg.Node [Pg.Node]
 
 
@@ -731,7 +741,7 @@ callParams f
             at <- tokAt (fromIntegral (f ^. Pg.location))
             open <- nextParen at
             tokIs (open + 1) "all"
-        pure (Normal (if f ^. Pg.aggDistinct then Just True else if explicitAll then Just False else Nothing) args sort)
+        pure (Normal (if f ^. Pg.aggDistinct then Distinct else if explicitAll then All else Unwritten) args sort)
   where
     args = f ^. Pg.args
     sort = if f ^. Pg.aggWithinGroup then [] else f ^. Pg.aggOrder
@@ -827,11 +837,15 @@ funcApplicationInline mode e f = do
     pure (name <> "(" <> body <> ")")
 
 
-distinctPrefix :: Maybe Bool -> R D
+-- | An aggregate's @distinct@ or @all@, or neither.
+data Quantifier = Unwritten | Distinct | All
+
+
+distinctPrefix :: Quantifier -> R D
 distinctPrefix = \case
-    Nothing -> pure mempty
-    Just True -> (<> " ") <$> kw "distinct"
-    Just False -> (<> " ") <$> kw "all"
+    Unwritten -> pure mempty
+    Distinct -> (<> " ") <$> kw "distinct"
+    All -> (<> " ") <$> kw "all"
 
 
 -- | A call's argument, maybe named.
