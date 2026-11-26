@@ -129,6 +129,22 @@ expected =
       (False, "CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS i ON s.t(a, (lower(b)) desc nulls last) WHERE c", "create unique index concurrently if not exists i\n    on s.t (a, (lower(b)) desc nulls last)\n    where c")
     , (True, "create index i on t using gin (name gin_trgm_ops)", "CREATE INDEX i\n    ON t USING gin (name gin_trgm_ops)")
     , (False, "create index i -- why\n  on t (a) where (status = 'pre_flight_check' or status = 'initializing' or status = 'waiting_for_payment') and kind = 'x'", "create index i -- why\n    on t (a)\n    where\n        (\n            status = 'pre_flight_check'\n            or status = 'initializing'\n            or status = 'waiting_for_payment'\n        )\n        and kind = 'x'")
+    , -- create function: the arguments on the first line if they fit; each
+      -- clause before the body on a line of its own, the last ending in as;
+      -- the body from the start of the next line; the clauses after it on
+      -- its last line.
+      (False, "create or replace function f(a bigint, b text default null) returns trigger as $$ begin return new; end $$ language plpgsql security definer", "create or replace function f(a bigint, b text default null)\n    returns trigger as\n$$ begin return new; end $$ language plpgsql security definer")
+    , (False, "CREATE FUNCTION s.f(market text, content jsonb, description text default null, rating numeric(4,2) = null, out total int) RETURNS SETOF jsonb LANGUAGE sql STABLE SET search_path = public, pg_temp AS 'select 1'", "create function s.f(\n    market text,\n    content jsonb,\n    description text default null,\n    rating numeric(4, 2) = null,\n    out total int\n)\n    returns setof jsonb\n    language sql\n    stable\n    set search_path = public, pg_temp as\n'select 1'")
+    , (False, "create function f() returns table (id bigint, item jsonb) as $$ select 1, null::jsonb $$ language sql", "create function f()\n    returns table (id bigint, item jsonb) as\n$$ select 1, null::jsonb $$ language sql")
+    , (False, "create procedure p(inout x int) language plpgsql as $$ begin x := 1; end $$", "create procedure p(inout x int)\n    language plpgsql as\n$$ begin x := 1; end $$")
+    , -- Comments on arguments; a comment among the clauses after the body
+      -- puts each after the first on a line of its own.
+      (False, "create function f(\n  a int, -- the a\n  b int -- the b\n) returns int as $$ select a + b $$ language sql\n  -- why\n  immutable", "create function f(\n    a int, -- the a\n    b int -- the b\n)\n    returns int as\n$$ select a + b $$ language sql\n    -- why\n    immutable")
+    , -- The opening quote lines up with the closing one on its own line.
+      (False, "create function f() returns int as $$\n      select 1\n    $$ language sql", "create function f()\n    returns int as\n    $$\n      select 1\n    $$ language sql")
+    , -- A SQL-standard body: its statements laid out under begin atomic.
+      (True, "create function f(x int) returns bigint language sql begin atomic; select count(*) from t where a = x; end", "CREATE FUNCTION f(x INT)\n    RETURNS BIGINT\n    LANGUAGE SQL\nBEGIN ATOMIC;\n    SELECT count(*)\n    FROM t\n    WHERE a = x;\nEND")
+    , (False, "create function f(x int) returns int language sql immutable return x + 1", "create function f(x int)\n    returns int\n    language sql\n    immutable\nreturn x + 1")
     , -- alter table: one action per line, trailing commas.
       (False, "alter table t add column a   int not null default 0", "alter table t\n    add column a int not null default 0")
     , (False, "alter table t drop column if exists a cascade, drop constraint c, add constraint fk foreign key (b) references u(id) not valid, validate constraint d", "alter table t\n    drop column if exists a cascade,\n    drop constraint c,\n    add constraint fk foreign key (b) references u(id) not valid,\n    validate constraint d")

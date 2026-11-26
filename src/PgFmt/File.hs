@@ -246,7 +246,7 @@ layOut :: Options -> Int -> ByteString -> IO (Either Outcome (Backend, Text))
 layOut opts column code = do
     scanned <- LibPgQuery.scan code
     let comments = either (const 0) (length . filter (.isComment) . LibPgQuery.tokens) scanned
-    attempt <- runBackend opts code (comments > 0)
+    attempt <- runBackend opts column code (comments > 0)
     case attempt of
         Left outcome -> pure (Left outcome)
         Right (used, alreadyCased, formatted0) -> do
@@ -277,8 +277,8 @@ formatEmbedded opts column query = do
 
 -- | Lay out one statement, or say why not. With the layout, whether its
 -- keywords are already in the requested case.
-runBackend :: Options -> ByteString -> Bool -> IO (Either Outcome (Backend, Bool, Text))
-runBackend opts body interiorComments = case opts.backend of
+runBackend :: Options -> Int -> ByteString -> Bool -> IO (Either Outcome (Backend, Bool, Text))
+runBackend opts column body interiorComments = case opts.backend of
     Syntax -> syntax body
     LibPgQuery -> libpgQuery body
     Auto -> do
@@ -291,7 +291,7 @@ runBackend opts body interiorComments = case opts.backend of
   where
     syntax sql = case opts.dialect of
         PlainSql -> do
-            laid <- Layout.formatStatement (opts.keywordCase == Upper) sql
+            laid <- Layout.formatStatementAt (opts.keywordCase == Upper) column sql
             pure case laid of
                 Right formatted -> Right (Syntax, True, formatted)
                 Left reason -> Left (Kept ("pgfmt does not lay it out: " <> reason))

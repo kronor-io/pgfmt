@@ -4,8 +4,8 @@
 
 -- | pgfmt's own layout for DML statements (SELECT, INSERT, UPDATE, DELETE,
 -- VALUES), rendered from libpg_query's parse tree; and for CREATE TABLE,
--- CREATE VIEW, CREATE ... AS, CREATE INDEX and ALTER TABLE, in a style of
--- its own (see the DDL section at the end).
+-- CREATE VIEW, CREATE ... AS, CREATE INDEX, ALTER TABLE and CREATE FUNCTION,
+-- in a style of its own (see the DDL section at the end).
 --
 -- This is the layout "PgFmt.Render" gives over postgresql-syntax's AST, and
 -- it has to stay byte for byte the same: the rules (leading commas, one select
@@ -39,6 +39,7 @@
 -- identifiers, quoted or not, are never changed.
 module PgFmt.Layout (
     formatStatement,
+    formatStatementAt,
 ) where
 
 import Control.Monad (forM, forM_, unless, when, zipWithM)
@@ -77,7 +78,14 @@ import Unsafe.Coerce (unsafeCoerce)
 -- something this renderer does not handle (a comment it cannot place among
 -- them).
 formatStatement :: Bool -> ByteString -> IO (Either Text Text)
-formatStatement upperKeywords sql = do
+formatStatement upperKeywords = formatStatementAt upperKeywords 0
+
+
+-- | 'formatStatement' for a statement that starts at this column of its
+-- line, where the caller indents its other lines to: what lines up with
+-- text the layout cannot move (a function body's closing quote) needs it.
+formatStatementAt :: Bool -> Int -> ByteString -> IO (Either Text Text)
+formatStatementAt upperKeywords column sql = do
     parsed <- L.parse sql
     scanned <- L.scan sql
     let laid = render parsed scanned
@@ -97,7 +105,7 @@ formatStatement upperKeywords sql = do
         (_, Left err) -> Left err.message
         (Right tree, Right scan) -> case tree ^. Pg.stmts of
             [rawStmt] | Just stmt <- rawStmt ^. Pg.maybe'stmt -> do
-                let env = mkEnv upperKeywords sql scan stmt
+                let env = (mkEnv upperKeywords sql scan stmt){column}
                 (doc, st) <- runStateT (runReaderT (statement stmt) env) St{consumed = IS.empty, memo = Map.empty}
                 let unplaced = [i | (i, t) <- IM.toList env.toks, t.text == "(", not (IS.member i st.consumed)]
                 unless (null unplaced) (Left "a parenthesis pgfmt cannot place")
@@ -153,6 +161,9 @@ data Env = Env
     -- it is written quoted, and whether unquoted.
     , cmts :: IM.IntMap [Cmt]
     -- ^ The comments after each token (by index), in order.
+    , column :: Int
+    -- ^ The column the statement starts at, which its lines are indented
+    -- to.
     , tightTypes :: Bool
     -- ^ Types written with no space before their modifiers, @numeric(10, 2)@,
     -- as in DDL.
@@ -200,6 +211,7 @@ mkEnv upper sql scan stmt =
         , upper
         , names = Map.fromListWith (\(a, b) (c, d) -> (a || c, b || d)) (mapMaybe' nameOf ts)
         , cmts = IM.fromListWith (flip (++)) (comments (-1) 0 (scan ^. Pg.tokens))
+        , column = 0
         , tightTypes = False
         , blankLineBefore = IS.fromList (blanks 0 Nothing (scan ^. Pg.tokens))
         }
@@ -3950,6 +3962,7 @@ statement n = case node n of
     Just (Pg.Node'CreateStmt c) -> local (\env -> env{tightTypes = True}) (createTable c)
     Just (Pg.Node'ViewStmt v) -> createView v
     Just (Pg.Node'IndexStmt ix) -> createIndex ix
+    Just (Pg.Node'CreateFunctionStmt f) -> local (\env -> env{tightTypes = True}) (createFunction f)
     Just (Pg.Node'AlterTableStmt a) -> local (\env -> env{tightTypes = True}) (alterTable a)
     Just (Pg.Node'CreateTableAsStmt c) -> createTableAs c
     Just (Pg.Node'CallStmt c) -> do
@@ -4256,7 +4269,7 @@ lastTok = do
         Nothing -> unsupported "an empty statement"
 
 
-data Piece = Word | Open | Glue | Close
+data Piece = Word | Open | Glue | Close | Dot
 
 
 -- | The tokens from @a@ to before @b@, which must be keywords, numbers, and
@@ -4923,3 +4936,298 @@ alterCmd c s e = case c ^. Pg.subtype of
         | otherwise = do
             w <- tokL j
             if w == "default" then pure j else findDefault (j + 1)
+
+
+-- | The tokens from @a@ to before @b@, as written but for keywords, in the
+-- keyword case: a function's clauses (@language plpgsql@, @set search_path
+-- = public@, @as 'obj', 'sym'@).
+looseRun :: Int -> Int -> R D
+looseRun a b = do
+    pieces <- forM [a .. b - 1] \j -> do
+        t <- tokM j
+        case t of
+            Just tk
+                | tk.text == "(" -> do
+                    _ <- expectParen j
+                    pure (Open, "(")
+                | tk.text `elem` [")", ","] -> pure (Close, pretty tk.text)
+                | tk.text == "." -> pure (Dot, ".")
+                | tk.isKeyword && tk.kind /= Pg.IDENT -> (Word,) <$> kw (T.toLower tk.text)
+                | otherwise -> pure (Word, raw tk.text)
+            Nothing -> unsupported "a clause pgfmt cannot read"
+    pure case pieces of
+        [] -> mempty
+        (k, d) : rest -> d <> go k rest
+  where
+    go _ [] = mempty
+    go prev ((k, d) : rest) = sep prev k <> d <> go k rest
+    sep Open _ = mempty
+    sep Dot _ = mempty
+    sep _ Close = mempty
+    sep _ Dot = mempty
+    sep _ _ = " "
+
+
+-- | @create function@ and @create procedure@: the arguments on the first
+-- line, or one per line if they do not fit; each clause before the body on
+-- a line of its own, the last ending in @as@; the body from the start of
+-- the line after, as written; the clauses after it on its last line.
+createFunction :: Pg.CreateFunctionStmt -> R D
+createFunction f = do
+    names <- strsOf (f ^. Pg.funcname)
+    -- The name: the first identifier after the words that start the
+    -- statement.
+    nameAt <- firstName 0
+    header <- wordsRun 0 nameAt
+    name <- qualNameAt nameAt names
+    let open = nameAt + 2 * length names - 1
+    close <- expectParen open
+    params <- forM (f ^. Pg.parameters) \p -> case node p of
+        Just (Pg.Node'FunctionParameter fp) -> pure fp
+        _ -> unsupported "a function parameter pgfmt cannot read"
+    let isTable fp = fp ^. Pg.mode == Pg.FUNC_PARAM_TABLE
+        (tableCols, args) = (filter isTable params, filter (not . isTable) params)
+    argDs <- paramList args (open + 1) close
+    end <- (+ 1) <$> lastTok
+    -- The clauses, in source order: @returns@ (right after the arguments,
+    -- if there), then each option.
+    opts <- forM (f ^. Pg.options) \o -> case node o of
+        Just (Pg.Node'DefElem de) -> (de,) <$> tokAt (fromIntegral (de ^. Pg.location))
+        _ -> unsupported "a function option pgfmt cannot read"
+    standardAt <- case f ^. Pg.maybe'sqlBody of
+        Just _ -> Just <$> standardBodyStart (close + 1)
+        Nothing -> pure Nothing
+    let optStarts = map snd opts
+        firstOpt = foldr min (fromMaybe end standardAt) optStarts
+    returnsD <-
+        if close + 1 < firstOpt
+            then do
+                isReturns <- tokIs (close + 1) "returns"
+                unless isReturns (unsupported "a function pgfmt cannot read")
+                Just <$> returnsClause f tableCols (close + 1) firstOpt
+            else pure Nothing
+    -- Where the body starts: @as@, or a SQL-standard body after every
+    -- clause.
+    (bodyAt, standard) <- case (f ^. Pg.maybe'sqlBody, [s | (de, s) <- opts, de ^. Pg.defname == "as"]) of
+        (Nothing, [s]) -> pure (s, Nothing)
+        (Just b, []) | Just at <- standardAt -> pure (at, Just b)
+        _ -> unsupported "a function without a body pgfmt can place"
+    -- A SQL-standard body ends the last clause; @as@ is a clause itself.
+    let ends = map (if isJust standard then min bodyAt else id) (drop 1 optStarts ++ [end])
+        clauses = zip3 (map fst opts) optStarts ends
+        before = [(s, e) | (_, s, e) <- clauses, s < bodyAt]
+        after = [(s, e) | (_, s, e) <- clauses, s > bodyAt]
+        asEnd = fromMaybe end (listToMaybe [e | (_, s, e) <- clauses, s == bodyAt])
+    beforeDs <- forM before \(s, e) -> do
+        d <- looseRun s e
+        b <- brk mempty s
+        pure (b <> d)
+    returnsLine <- case returnsD of
+        Nothing -> pure mempty
+        Just d -> (<> d) <$> brk mempty (close + 1)
+    argsD <- itemList functionHeaderThreshold (header <+> name) argDs close
+    let clauseLines = returnsLine <> mconcat beforeDs
+    bodyD <- case standard of
+        Just b -> do
+            bb <- brk mempty bodyAt
+            d <- standardBody b bodyAt end
+            pure (bb <> d)
+        Nothing -> do
+            asK <- kw "as"
+            bodyBrk <- brk mempty (bodyAt + 1)
+            -- The opening quote lines up with the closing one, when that
+            -- starts a line of its own.
+            col <- asks (.column)
+            bodyTok <- tokM (bodyAt + 1)
+            let closeCol = case bodyTok of
+                    Just tk | asEnd == bodyAt + 2, Just tag <- dollarTag tk.text -> do
+                        let lastLine = snd (T.breakOnEnd "\n" tk.text)
+                            (spaces, rest) = T.span (== ' ') lastLine
+                        if T.isInfixOf "\n" tk.text && rest == tag then Just (T.length spaces) else Nothing
+                    _ -> Nothing
+                openIndent = maybe mempty (\c -> pretty (T.replicate (max 0 (c - col)) " ")) closeCol
+            body <- looseRun (bodyAt + 1) asEnd
+            afterDs <- forM after \(s, e) -> looseRun s e
+            -- The clauses after the body follow it on its last line; with a
+            -- comment among them, each after the first on a line of its own.
+            commented <- or <$> forM (drop 1 after) \(s, _) -> not . null <$> gapBefore s
+            rest <-
+                if commented
+                    then forM (zip (drop 1 after) (drop 1 afterDs)) \((s, _), d) -> (<> d) <$> brk mempty s
+                    else pure [" " <> d | d <- drop 1 afterDs]
+            let firstAfter = maybe mempty (" " <>) (listToMaybe afterDs)
+            pure (" " <> asK <> bodyBrk <> openIndent <> body <> firstAfter <> (if commented then nest indentSize (mconcat rest) else mconcat rest))
+    pure (header <+> name <> argsD <> nest indentSize clauseLines <> bodyD)
+  where
+    firstName j = do
+        t <- tokM j
+        case t of
+            Just tk | tk.kind == Pg.IDENT || (tk.isKeyword && T.toLower tk.text `notElem` ["create", "or", "replace", "function", "procedure"]) -> pure j
+            Just _ -> firstName (j + 1)
+            Nothing -> unsupported "a function pgfmt cannot read"
+
+
+-- | Where a SQL-standard body starts: @begin atomic@ or @return@, at or
+-- after this token.
+standardBodyStart :: Int -> R Int
+standardBodyStart j = do
+    w <- tokL j
+    w1 <- tokL (j + 1)
+    t <- tokM j
+    case t of
+        Nothing -> unsupported "a function body pgfmt cannot find"
+        Just _
+            | w == "return" || (w == "begin" && w1 == "atomic") -> pure j
+            | w == "(" -> do
+                m <- matchOf j
+                maybe (unsupported "an unclosed parenthesis") (standardBodyStart . (+ 1)) m
+            | otherwise -> standardBodyStart (j + 1)
+
+
+-- | A SQL-standard body, from token @at@ to before @end@: @return@ and its
+-- expression, or @begin atomic@, each statement laid out on the lines
+-- after it, indented, and @end@.
+standardBody :: Pg.Node -> Int -> Int -> R D
+standardBody b at end = case node b of
+    Just (Pg.Node'ReturnStmt r) -> do
+        k <- kw "return"
+        ex <- req "a return" (r ^. Pg.maybe'returnval)
+        d <- ddlExpr ex
+        pure (k <+> d)
+    Just (Pg.Node'List outer) | [inner] <- outer ^. Pg.items, Just (Pg.Node'List l) <- node inner -> do
+        let stmts = l ^. Pg.items
+        isEnd <- tokIs (end - 1) "end"
+        unless isEnd (unsupported "a function body pgfmt cannot read")
+        -- Each statement starts after @atomic@ or after a semicolon; one
+        -- right after @atomic@ is kept.
+        semiFirst <- tokIs (at + 2) ";"
+        let first = if semiFirst then at + 3 else at + 2
+        semis <- semicolons first (end - 1)
+        let starts = first : map (+ 1) semis
+        unless (length semis == length stmts) (unsupported "a function body pgfmt cannot read")
+        k <- (<> (if semiFirst then ";" else mempty)) <$> kw "begin atomic"
+        ds <- forM (zip stmts starts) \(st, s) -> do
+            d <- statement st
+            br <- brk mempty s
+            pure (br <> d <> ";")
+        endBrk <- brk mempty (end - 1)
+        e <- kw "end"
+        pure (k <> nest indentSize (mconcat ds) <> endBrk <> e)
+    _ -> unsupported "a function body pgfmt does not lay out"
+  where
+    semicolons j stop
+        | j >= stop = pure []
+        | otherwise = do
+            w <- tokL j
+            case w of
+                ";" -> (j :) <$> semicolons (j + 1) stop
+                "(" -> do
+                    m <- matchOf j
+                    maybe (unsupported "an unclosed parenthesis") (\c -> semicolons (c + 1) stop) m
+                _ -> semicolons (j + 1) stop
+
+
+-- | A dollar-quoted string's tag, as in @$@ or @$body$@.
+dollarTag :: Text -> Maybe Text
+dollarTag t = case T.uncons t of
+    Just ('$', rest) | (tag, r) <- T.breakOn "$" rest, not (T.null r) -> Just ("$" <> tag <> "$")
+    _ -> Nothing
+
+
+-- | The longest @create function name(args)@ line that keeps its arguments
+-- on it.
+functionHeaderThreshold :: Int
+functionHeaderThreshold = 100
+
+
+-- | A function's parameters, between the parentheses at these tokens, with
+-- the token each starts at.
+paramList :: [Pg.FunctionParameter] -> Int -> Int -> R [(Int, D)]
+paramList ps from close = do
+    starts <- traverse (tokAt . fromIntegral . (^. Pg.location)) ps
+    case starts of
+        [] -> unless (from == close) (unsupported "a function pgfmt cannot read")
+        s0 : _ -> unless (s0 == from) (unsupported "a function pgfmt cannot read")
+    let ends = map (subtract 1) (drop 1 starts) ++ [close]
+    forM (zip3 ps starts ends) \(p, s, e) -> (s,) <$> param p s e
+
+
+-- | A parenthesized list (of parameters, of columns) after @lead@: on one
+-- line if it fits in @width@ and has no comments, otherwise one item per
+-- line with the comma at the end, the comments in their places.
+itemList :: Int -> D -> [(Int, D)] -> Int -> R D
+itemList width lead items close = do
+    commented <- or <$> mapM (fmap (not . null) . gapBefore) (map fst items ++ [close])
+    let inline = "(" <> commaJoin (map snd items) <> ")"
+        n = length items
+    if null items && not commented
+        then pure "()"
+        else
+            if not commented && len (lead <> inline) <= width
+                then pure inline
+                else do
+                    ls <- forM (zip [0 :: Int ..] items) \(i, (q, d)) -> do
+                        b <- brk mempty q
+                        pure (b <> d <> (if i < n - 1 then "," else mempty))
+                    cs <- gapBefore close
+                    let (trailing, own) = span (not . (.ownLine)) cs
+                        endComments =
+                            mconcat [" " <> raw x.ctext | x <- trailing]
+                                <> mconcat [hardline <> (if x.blankBefore then hardline else mempty) <> raw x.ctext | x <- own]
+                    pure ("(" <> nest indentSize (mconcat ls <> endComments) <> hardline <> ")")
+
+
+-- | One parameter, from token @s@ to before @e@: its mode, name, type and
+-- default.
+param :: Pg.FunctionParameter -> Int -> Int -> R D
+param p s e = do
+    w <- tokL s
+    let explicitMode = w `elem` ["in", "out", "inout", "variadic"]
+    modeD <- if explicitMode then Just <$> kw w else pure Nothing
+    let nameAt = if explicitMode then s + 1 else s
+    nameD <-
+        if T.null (p ^. Pg.name)
+            then pure Nothing
+            else Just <$> identAt nameAt (p ^. Pg.name)
+    tn <- req "a function parameter" (p ^. Pg.maybe'argType)
+    ty <- typeName tn
+    def <- case p ^. Pg.maybe'defexpr of
+        Nothing -> pure Nothing
+        Just ex -> do
+            -- @default@ or @=@, the first such token after the type.
+            tyAt <- tokAt (fromIntegral (tn ^. Pg.location))
+            k <- findDefault tyAt
+            kd <- if k == "=" then pure "=" else kw "default"
+            d <- top ex >>= expr MR
+            pure (Just (kd <+> d))
+    pure (spaceJoin (catMaybes [modeD, nameD, Just ty, def]))
+  where
+    findDefault j
+        | j >= e = unsupported "a parameter default pgfmt cannot read"
+        | otherwise = do
+            w <- tokL j
+            if w `elem` ["default", "="] then pure w else findDefault (j + 1)
+
+
+-- | @returns type@, @returns setof type@ or @returns table (columns)@, from
+-- token @s@ to before @e@.
+returnsClause :: Pg.CreateFunctionStmt -> [Pg.FunctionParameter] -> Int -> Int -> R D
+returnsClause f tableCols s e = do
+    k <- kw "returns"
+    isTable <- tokIs (s + 1) "table"
+    if isTable
+        then do
+            t <- kw "table"
+            close <- expectParen (s + 2)
+            unless (close == e - 1) (unsupported "a returns table pgfmt cannot read")
+            cols <- paramList tableCols (s + 3) close
+            l <- itemList functionHeaderThreshold (k <+> t <> " ") cols close
+            pure (k <+> t <+> l)
+        else do
+            tn <- req "a function's return type" (f ^. Pg.maybe'returnType)
+            setof <- tokIs (s + 1) "setof"
+            let tyStart = if setof then s + 2 else s + 1
+            at <- tokM tyStart >>= maybe (unsupported "a return type pgfmt cannot read") (pure . (.start))
+            ty <- typeName (tn & Pg.setof .~ False & Pg.location .~ fromIntegral at)
+            sd <- if setof then (<> " ") <$> kw "setof" else pure mempty
+            pure (k <+> sd <> ty)
