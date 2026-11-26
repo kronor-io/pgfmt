@@ -3,9 +3,7 @@
 module PgFmt.Layout.Parens where
 
 import Control.Monad (unless, when)
-import Control.Monad.State.Strict (gets, modify')
 import Data.IntSet qualified as IS
-import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe, isNothing)
 import Lens.Micro ((^.))
 import PgQuery qualified as Pg
