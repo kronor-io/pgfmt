@@ -75,7 +75,7 @@ locsNode n = case n ^. Pg.maybe'node of
 
 
 -- | Every location in a message's subtree, through protobuf reflection.
-locsMsg :: forall m. (Message m) => m -> [Int]
+locsMsg :: forall m. Message m => m -> [Int]
 locsMsg m = concatMap field (Map.elems (fieldsByTag @m))
   where
     field :: FieldDescriptor m -> [Int]
@@ -95,7 +95,7 @@ locsMsg m = concatMap field (Map.elems (fieldsByTag @m))
     isLocation name = name == "location" || "_location" `isSuffixOf` name
 
 
-locsAny :: forall v. (Message v) => v -> [Int]
+locsAny :: forall v. Message v => v -> [Int]
 locsAny v
     -- The node wrapper has a field for each of its 250-odd kinds; going
     -- through 'locsNode' visits only the one it holds.

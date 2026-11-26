@@ -55,6 +55,8 @@ instance ToList Ast.Indirection Ast.IndirectionEl where toL (Ast.Indirection xs)
 #ifdef KRONOR_SYNTAX
 instance ToList Ast.HsTargetList Ast.HsTargetEl where toL (Ast.HsTargetList xs) = NE.toList xs
 #endif
+
+
 instance ToList Ast.SetClauseList Ast.SetClause where toL (Ast.SetClauseList xs) = NE.toList xs
 instance ToList Ast.SortClause Ast.SortBy where toL (Ast.SortClause xs) = NE.toList xs
 instance ToList Ast.RowsfromList Ast.RowsfromItem where toL (Ast.RowsfromList xs) = NE.toList xs
@@ -1345,7 +1347,6 @@ renderTargetingInline = \case
                 Just exprs -> "select distinct on (" <> inline render exprs <> ")"
          in prefix <> " " <> commaJoin (map renderTargetEl (toL tl))
 
-
 #ifdef KRONOR_SYNTAX
 -- | Render a hasql-th target element on a single line. Used in inline subquery
 -- contexts. The multi-line `$Name{...}` layout is handled separately by
@@ -1461,7 +1462,6 @@ renderTargeting = \case
                 Just exprs -> "select distinct on (" <> inline render exprs <> ")"
          in renderSqlTargetList prefix tl
 
-
 #ifdef KRONOR_SYNTAX
 -- | Block-list layout for hasql-th target lists. First item lands at one
 -- indent past the SELECT keyword; subsequent items are emitted as `, item` at
@@ -1546,7 +1546,6 @@ renderBlockListWith prefix renderItem items =
     commaPad = pretty (T.replicate (max 0 (indentSize - 2)) " ")
     renderRow 0 item = firstPad <> renderItem item
     renderRow _ item = commaPad <> ", " <> renderItem item
-
 
 #ifdef KRONOR_SYNTAX
 -- | Multi-line `$Name{...}` record layout:

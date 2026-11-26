@@ -8,14 +8,14 @@
 module PgFmt.Layout.Comments where
 
 import Control.Monad (forM)
-import Control.Monad.Reader (asks)
 import Control.Monad.Except (MonadError (catchError))
+import Control.Monad.Reader (asks)
 import Data.IntMap.Strict qualified as IM
 import Data.Text (Text)
-import PgQuery qualified as Pg
-import Prettyprinter (hardline)
 import PgFmt.Layout.Locations
 import PgFmt.Layout.Monad
+import PgQuery qualified as Pg
+import Prettyprinter (hardline)
 
 
 -- | The comments in the gap before a token: after the token before it, and

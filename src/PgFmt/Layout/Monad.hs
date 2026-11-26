@@ -2,9 +2,9 @@
 -- far, and the small helpers every part of the layout uses.
 module PgFmt.Layout.Monad where
 
+import Control.Monad.Except (MonadError (throwError))
 import Control.Monad.Reader (ReaderT, asks)
 import Control.Monad.State.Strict (StateT, gets, modify')
-import Control.Monad.Except (MonadError (throwError))
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS
 import Data.Char (isAsciiUpper, toLower)
@@ -15,11 +15,11 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Lens.Micro ((^.))
+import PgFmt.Layout.Locations
 import PgQuery qualified as Pg
 import Prettyprinter (Doc, LayoutOptions (..), PageWidth (..), hcat, layoutPretty, pretty, punctuate)
 import Prettyprinter.Internal (unsafeTextWithoutNewlines)
 import Prettyprinter.Render.Text (renderStrict)
-import PgFmt.Layout.Locations
 
 
 isComment :: Pg.ScanToken -> Bool
@@ -188,7 +188,8 @@ mkEnv upper sql scan stmt =
         | t.text == ")", o : stack' <- stack = (o, i) : (i, o) : pairs stack' rest
         | otherwise = pairs stack rest
     nameOf t
-        | t.kind == Pg.IDENT, Just quoted <- T.stripPrefix "\"" t.text =
+        | t.kind == Pg.IDENT
+        , Just quoted <- T.stripPrefix "\"" t.text =
             Just (T.replace "\"\"" "\"" (T.dropEnd 1 quoted), (True, False))
         | t.kind == Pg.IDENT || (t.isKeyword && not t.reserved) = Just (foldCase t.text, (False, True))
         | otherwise = Nothing
@@ -305,8 +306,6 @@ len :: D -> Int
 len = T.length . renderToText
 
 
-
-
 ----------------------------------------------------------------------
 -- Nodes.
 ----------------------------------------------------------------------
@@ -329,7 +328,6 @@ nodeName :: Pg.Node -> Text
 nodeName n = case node n of
     Nothing -> "an empty node"
     Just x -> T.takeWhile (/= ' ') (T.drop 6 (T.pack (show x)))
-
 
 
 firstJustM :: (a -> R (Maybe b)) -> [a] -> R (Maybe b)

@@ -58,16 +58,16 @@ import Data.ProtoLens.Message (Message (..))
 import Data.Text (Text)
 import Data.Text.Encoding qualified as TE
 import Lens.Micro ((^.))
-import PgFmt.LibPgQuery qualified as L
-import PgQuery qualified as Pg
-import Prettyprinter (layoutPretty, (<+>))
-import Prettyprinter.Render.Text (renderStrict)
 import PgFmt.Layout.Ddl
 import PgFmt.Layout.Dml
 import PgFmt.Layout.Expr
 import PgFmt.Layout.Monad
 import PgFmt.Layout.Names
 import PgFmt.Layout.Parens
+import PgFmt.LibPgQuery qualified as L
+import PgQuery qualified as Pg
+import Prettyprinter (layoutPretty, (<+>))
+import Prettyprinter.Render.Text (renderStrict)
 
 
 -- | Lay out one DML statement or one of the DDL statements it knows (no comments
@@ -89,14 +89,16 @@ formatStatementAt upperKeywords column sql = do
     scanned <- L.scan sql
     let laid = render parsed scanned
     case laid of
-        Right out | Right scan <- scanned, hasComments scan -> do
-            -- Every comment must come out once, in its order: each is
-            -- written where the layout breaks a line at its place in the
-            -- source, and one with no such break is not written at all.
-            again <- L.scan (TE.encodeUtf8 out)
-            pure case again of
-                Right scan' | commentTexts (TE.encodeUtf8 out) scan' == commentTexts sql scan -> laid
-                _ -> Left "a comment pgfmt cannot place"
+        Right out
+            | Right scan <- scanned
+            , hasComments scan -> do
+                -- Every comment must come out once, in its order: each is
+                -- written where the layout breaks a line at its place in the
+                -- source, and one with no such break is not written at all.
+                again <- L.scan (TE.encodeUtf8 out)
+                pure case again of
+                    Right scan' | commentTexts (TE.encodeUtf8 out) scan' == commentTexts sql scan -> laid
+                    _ -> Left "a comment pgfmt cannot place"
         _ -> pure laid
   where
     render parsed scanned = case (parsed, scanned) of

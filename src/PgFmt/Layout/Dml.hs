@@ -10,14 +10,14 @@ import Data.ProtoLens.Message (Message (..))
 import Data.Text (Text)
 import Data.Text qualified as T
 import Lens.Micro ((&), (.~), (^.))
-import PgQuery qualified as Pg
-import Prettyprinter (hardline, indent, nest, pretty, vsep, (<+>))
+import PgFmt.Layout.Comments
+import PgFmt.Layout.Expr
 import PgFmt.Layout.Locations
 import PgFmt.Layout.Monad
-import PgFmt.Layout.Comments
-import PgFmt.Layout.Parens
 import PgFmt.Layout.Names
-import PgFmt.Layout.Expr
+import PgFmt.Layout.Parens
+import PgQuery qualified as Pg
+import Prettyprinter (hardline, indent, nest, pretty, vsep, (<+>))
 
 
 -- | A select's first token: @with@, @select@, @values@, or the opening
@@ -82,9 +82,12 @@ selectParens' bound s ls = do
                 placed <- isConsumed p
                 mm <- matchOf p
                 case mm of
-                    Just m | isParen, not placed, m > maxTok -> do
-                        cov <- covers p m set
-                        if cov then consume p >> go (p - 1) (n + 1) else pure n
+                    Just m
+                        | isParen
+                        , not placed
+                        , m > maxTok -> do
+                            cov <- covers p m set
+                            if cov then consume p >> go (p - 1) (n + 1) else pure n
                     _ -> pure n
     go (f - 1) 0
 
@@ -101,9 +104,11 @@ selectParensPeek s = do
             isParen <- tokIs p "("
             mm <- matchOf p
             case mm of
-                Just m | isParen, m > maxTok -> do
-                    cov <- covers p m set
-                    if cov then go (p - 1) (n + 1) else pure n
+                Just m
+                    | isParen
+                    , m > maxTok -> do
+                        cov <- covers p m set
+                        if cov then go (p - 1) (n + 1) else pure n
                 _ -> pure n
     go (f - 1) 0
 
@@ -320,7 +325,8 @@ targetAlias rt
         case t of
             Nothing -> unsupported "an alias pgfmt cannot find"
             Just tk
-                | d == 0, identText tk == Just name -> do
+                | d == 0
+                , identText tk == Just name -> do
                     -- An alias ends the target; a column of the same name in
                     -- @t.name@ does not.
                     next <- tokM (i + 1)
@@ -339,9 +345,10 @@ clauseWords = ["from", "into", "where", "group", "having", "window", "order", "l
 
 
 depthBetween :: Int -> Int -> R Int
-depthBetween a b = sum <$> forM [a .. b - 1] \i -> do
-    w <- tokL i
-    pure if w `elem` ["(", "["] then 1 else if w `elem` [")", "]"] then -1 else 0
+depthBetween a b =
+    sum <$> forM [a .. b - 1] \i -> do
+        w <- tokL i
+        pure if w `elem` ["(", "["] then 1 else if w `elem` [")", "]"] then -1 else 0
 
 
 -- | "PgFmt.Render"'s @renderSelectWithParensMaybeWrap@.
@@ -931,9 +938,12 @@ joinParens' n = do
             placed <- isConsumed p
             mm <- matchOf p
             case mm of
-                Just m | isParen, not placed, m > maxTok -> do
-                    cov <- covers p m set
-                    if cov then consume p >> go (p - 1) (k + 1) else pure k
+                Just m
+                    | isParen
+                    , not placed
+                    , m > maxTok -> do
+                        cov <- covers p m set
+                        if cov then consume p >> go (p - 1) (k + 1) else pure k
                 _ -> pure k
     go (f - 1) 0
 

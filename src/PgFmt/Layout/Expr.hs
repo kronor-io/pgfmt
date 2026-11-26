@@ -12,14 +12,14 @@ import Data.Maybe (catMaybes, fromMaybe, isJust)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Lens.Micro ((^.))
-import PgQuery qualified as Pg
-import Prettyprinter (align, hardline, hcat, nest, pretty, punctuate, vsep, (<+>))
+import PgFmt.Layout.Comments
+import {-# SOURCE #-} PgFmt.Layout.Dml (selMaybeWrap, selP, selWrapped, selectParens, sortClause)
 import PgFmt.Layout.Locations
 import PgFmt.Layout.Monad
-import PgFmt.Layout.Comments
-import PgFmt.Layout.Parens
 import PgFmt.Layout.Names
-import {-# SOURCE #-} PgFmt.Layout.Dml (selMaybeWrap, selP, selWrapped, selectParens, sortClause)
+import PgFmt.Layout.Parens
+import PgQuery qualified as Pg
+import Prettyprinter (align, hardline, hcat, nest, pretty, punctuate, vsep, (<+>))
 
 
 -- | An expression on one line: "PgFmt.Render"'s @renderExpr@ ('MR'), its
@@ -95,7 +95,7 @@ core mode e = case node e.en of
     sub m = m
 
 
-(>=>) :: (Monad m) => (a -> m b) -> (b -> m c) -> a -> m c
+(>=>) :: Monad m => (a -> m b) -> (b -> m c) -> a -> m c
 f >=> g = \x -> f x >>= g
 
 
@@ -310,11 +310,13 @@ boolExpr mode e b = case b ^. Pg.boolop of
         argStart <- tokAt (minimum (fromIntegral (b ^. Pg.location) : locsNode argN))
         if argStart < notAt
             then -- @x not in (select ...)@
-            case node argN of
-                Just (Pg.Node'SubLink s) | s ^. Pg.subLinkType == Pg.ANY_SUBLINK, null (s ^. Pg.operName) -> do
-                    test <- req "a not in" (s ^. Pg.maybe'testexpr) >>= child arg.en
-                    inSubLink mode test s True
-                _ -> unsupported "a not pgfmt cannot read"
+                case node argN of
+                    Just (Pg.Node'SubLink s)
+                        | s ^. Pg.subLinkType == Pg.ANY_SUBLINK
+                        , null (s ^. Pg.operName) -> do
+                            test <- req "a not in" (s ^. Pg.maybe'testexpr) >>= child arg.en
+                            inSubLink mode test s True
+                    _ -> unsupported "a not pgfmt cannot read"
             else do
                 k <- kw "not"
                 d <- expr mode arg
@@ -577,17 +579,19 @@ classifyCall f = do
                         if all (\(k, _) -> k `elem` ["from", "for"]) sorted
                             then pure (Substring x sorted)
                             else unsupported "a substring pgfmt cannot read"
-                ([_, fn], _) | fn `elem` ["btrim", "ltrim", "rtrim"], sqlSyntax -> do
-                    let modifier = case [w | (_, w) <- pieces, w `elem` ["both", "leading", "trailing"]] of
-                            w : _ -> Just w
-                            [] -> Nothing
-                        hasFrom = "from" `elem` map snd pieces
-                    case args of
-                        [s] -> pure Trim{modifier, chars = Nothing, hasFrom, strings = [s]}
-                        [s, chars]
-                            | hasFrom -> pure Trim{modifier, chars = Just chars, hasFrom = True, strings = [s]}
-                            | otherwise -> pure Trim{modifier, chars = Nothing, hasFrom = False, strings = [s, chars]}
-                        _ -> unsupported "a trim pgfmt cannot read"
+                ([_, fn], _)
+                    | fn `elem` ["btrim", "ltrim", "rtrim"]
+                    , sqlSyntax -> do
+                        let modifier = case [w | (_, w) <- pieces, w `elem` ["both", "leading", "trailing"]] of
+                                w : _ -> Just w
+                                [] -> Nothing
+                            hasFrom = "from" `elem` map snd pieces
+                        case args of
+                            [s] -> pure Trim{modifier, chars = Nothing, hasFrom, strings = [s]}
+                            [s, chars]
+                                | hasFrom -> pure Trim{modifier, chars = Just chars, hasFrom = True, strings = [s]}
+                                | otherwise -> pure Trim{modifier, chars = Nothing, hasFrom = False, strings = [s, chars]}
+                            _ -> unsupported "a trim pgfmt cannot read"
                 (["pg_catalog", "overlay"], [x, placing, from]) | sqlSyntax -> pure Overlay{string = x, placing, from, for = Nothing}
                 (["pg_catalog", "overlay"], [x, placing, from, for]) | sqlSyntax -> pure Overlay{string = x, placing, from, for = Just for}
                 (["pg_catalog", "timezone"], [zone, x]) | sqlSyntax -> pure (AtTimeZone x zone)
@@ -1486,7 +1490,9 @@ caseWrapped e c = do
 
 exprForceSubqueryWrap :: E -> R D
 exprForceSubqueryWrap e
-    | e.lv == 0, Just (Pg.Node'SubLink s) <- node e.en, s ^. Pg.subLinkType == Pg.EXPR_SUBLINK =
+    | e.lv == 0
+    , Just (Pg.Node'SubLink s) <- node e.en
+    , s ^. Pg.subLinkType == Pg.EXPR_SUBLINK =
         subLinkSel s >>= selWrapped
     | e.lv == 0
     , Just (Pg.Node'AIndirection ind) <- node e.en
@@ -1552,17 +1558,20 @@ condCommented anchor keyword n = do
         andPad = pretty (T.replicate (max 0 (anchor - 3)) " ")
     k <- kw keyword
     case node n of
-        Just (Pg.Node'BoolExpr b) | e.lv == 0, b ^. Pg.boolop == Pg.AND_EXPR, first : rest <- b ^. Pg.args -> do
-            andK <- kw "and"
-            fd <- child n first >>= exprMaybeWrap
-            rds <- forM rest \x -> do
-                xd <- child n x >>= exprMaybeWrap
-                andAt <- clauseAt [["and"]] x
-                -- The comments before the @and@ (one after it has no
-                -- place).
-                b' <- (<> (andPad <> andK)) <$> brkAt andPad andAt
-                pure (b' <+> xd)
-            pure (kwPad <> k <+> fd <> mconcat rds)
+        Just (Pg.Node'BoolExpr b)
+            | e.lv == 0
+            , b ^. Pg.boolop == Pg.AND_EXPR
+            , first : rest <- b ^. Pg.args -> do
+                andK <- kw "and"
+                fd <- child n first >>= exprMaybeWrap
+                rds <- forM rest \x -> do
+                    xd <- child n x >>= exprMaybeWrap
+                    andAt <- clauseAt [["and"]] x
+                    -- The comments before the @and@ (one after it has no
+                    -- place).
+                    b' <- (<> (andPad <> andK)) <$> brkAt andPad andAt
+                    pure (b' <+> xd)
+                pure (kwPad <> k <+> fd <> mconcat rds)
         _ -> do
             d <- exprMaybeWrap e
             pure (kwPad <> k <+> d)

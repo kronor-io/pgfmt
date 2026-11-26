@@ -9,9 +9,9 @@ import Data.Maybe (isJust)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Lens.Micro ((^.))
+import PgFmt.Layout.Monad
 import PgQuery qualified as Pg
 import Prettyprinter (hcat, pretty, punctuate, (<+>))
-import PgFmt.Layout.Monad
 
 
 -- | An identifier as the source writes it, quoted or not.
@@ -90,7 +90,8 @@ aConst mode c = do
   where
     minus = if mode == MP then "- " else "-"
     number v i source
-        | v < 0, source == "-" = do
+        | v < 0
+        , source == "-" = do
             digits <- tokL (i + 1)
             pure (minus <> pretty (if T.all isDigit digits then T.pack (show (negate v)) else digits))
         | T.all isDigit source = txt (T.pack (show v))

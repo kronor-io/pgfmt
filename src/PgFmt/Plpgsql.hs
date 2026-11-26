@@ -312,4 +312,3 @@ normalise = \case
 
 slice :: Int -> Int -> ByteString -> ByteString
 slice a b = BS.take (b - a) . BS.drop a
-

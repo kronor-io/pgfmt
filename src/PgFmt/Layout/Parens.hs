@@ -6,9 +6,9 @@ import Control.Monad (unless, when)
 import Data.IntSet qualified as IS
 import Data.Maybe (fromMaybe, isNothing)
 import Lens.Micro ((^.))
-import PgQuery qualified as Pg
 import PgFmt.Layout.Locations
 import PgFmt.Layout.Monad
+import PgQuery qualified as Pg
 
 
 -- | An expression where it occurs: its node, the parentheses the source has
@@ -78,12 +78,15 @@ levels s0 e0 ls takes = do
         placed <- isConsumed p
         mm <- matchOf p
         case mm of
-            Just m | isParen, not placed, m > e -> do
-                cov <- covers p m ls
-                theirs <- takes p m
-                if cov && not theirs
-                    then consume p >> go p m (n + 1)
-                    else pure n
+            Just m
+                | isParen
+                , not placed
+                , m > e -> do
+                    cov <- covers p m ls
+                    theirs <- takes p m
+                    if cov && not theirs
+                        then consume p >> go p m (n + 1)
+                        else pure n
             _ -> pure n
 
 
@@ -139,7 +142,6 @@ indirectionEnd i (el : rest) = case node el of
             Just "]" -> bracketEnd (j + 1) (depth - 1)
             Just "[" -> bracketEnd (j + 1) (depth + 1)
             _ -> bracketEnd (j + 1) depth
-
 
 
 -- | A subquery: the select, and how many parentheses the source has around

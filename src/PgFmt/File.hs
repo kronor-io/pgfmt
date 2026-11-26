@@ -359,6 +359,7 @@ runBackend opts column body interiorComments = case opts.backend of
                     Left err -> Left (Kept ("libpg_query could not deparse it: " <> err.message))
                     Right formatted -> Right Laid{backend = LibPgQuery, keywordsCased = False, text = T.strip formatted}
 
+
 -- | Spell the keywords of a backend's output in the chosen case.
 --
 -- Telling keywords from identifiers spelled like keywords (@name@, @type@):

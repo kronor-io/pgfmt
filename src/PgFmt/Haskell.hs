@@ -77,7 +77,8 @@ quasiQuotes source = code Cursor{offset = 0, line = 1, column = 0} Nothing (T.un
         | x == '-', lineComment prev s = skipLine at s
         | x == '"' = string (forward 1 at) rest
         | x == '\'' = charLiteral
-        | x == '[', Just (name, afterBar) <- opening rest =
+        | x == '['
+        , Just (name, afterBar) <- opening rest =
             let open = at.offset + 1 + T.length name + 1
              in case closing open afterBar of
                     Just (end, afterClose)

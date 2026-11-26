@@ -18,14 +18,14 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Lens.Micro ((&), (.~), (^.))
+import PgFmt.Layout.Comments
+import PgFmt.Layout.Dml
+import PgFmt.Layout.Expr
+import PgFmt.Layout.Monad
+import PgFmt.Layout.Names
+import PgFmt.Layout.Parens
 import PgQuery qualified as Pg
 import Prettyprinter (hardline, nest, pretty, vsep, (<+>))
-import PgFmt.Layout.Monad
-import PgFmt.Layout.Comments
-import PgFmt.Layout.Parens
-import PgFmt.Layout.Names
-import PgFmt.Layout.Expr
-import PgFmt.Layout.Dml
 
 
 -- | The statement's last token, before any semicolon.
@@ -918,10 +918,12 @@ quotedBody asAt asEnd after = do
     col <- asks (.column)
     bodyTok <- tokM (asAt + 1)
     let closeCol = case bodyTok of
-            Just tk | asEnd == asAt + 2, Just tag <- dollarTag tk.text -> do
-                let lastLine = snd (T.breakOnEnd "\n" tk.text)
-                    (spaces, rest) = T.span (== ' ') lastLine
-                if T.isInfixOf "\n" tk.text && rest == tag then Just (T.length spaces) else Nothing
+            Just tk
+                | asEnd == asAt + 2
+                , Just tag <- dollarTag tk.text -> do
+                    let lastLine = snd (T.breakOnEnd "\n" tk.text)
+                        (spaces, rest) = T.span (== ' ') lastLine
+                    if T.isInfixOf "\n" tk.text && rest == tag then Just (T.length spaces) else Nothing
             _ -> Nothing
         openIndent = maybe mempty (\c -> pretty (T.replicate (max 0 (c - col)) " ")) closeCol
     body <- looseRun (asAt + 1) asEnd
@@ -963,25 +965,27 @@ standardBody statement b at end = case node b of
         ex <- req "a return" (r ^. Pg.maybe'returnval)
         d <- ddlExpr ex
         pure (k <+> d)
-    Just (Pg.Node'List outer) | [inner] <- outer ^. Pg.items, Just (Pg.Node'List l) <- node inner -> do
-        let stmts = l ^. Pg.items
-        isEnd <- tokIs (end - 1) "end"
-        unless isEnd (unsupported "a function body pgfmt cannot read")
-        -- Each statement starts after @atomic@ or after a semicolon; one
-        -- right after @atomic@ is kept.
-        semiFirst <- tokIs (at + 2) ";"
-        let first = if semiFirst then at + 3 else at + 2
-        semis <- semicolons first (end - 1)
-        let starts = first : map (+ 1) semis
-        unless (length semis == length stmts) (unsupported "a function body pgfmt cannot read")
-        k <- (<> (if semiFirst then ";" else mempty)) <$> kw "begin atomic"
-        ds <- forM (zip stmts starts) \(st, s) -> do
-            d <- statement st
-            br <- brk mempty s
-            pure (br <> d <> ";")
-        endBrk <- brk mempty (end - 1)
-        e <- kw "end"
-        pure (k <> nest indentSize (mconcat ds) <> endBrk <> e)
+    Just (Pg.Node'List outer)
+        | [inner] <- outer ^. Pg.items
+        , Just (Pg.Node'List l) <- node inner -> do
+            let stmts = l ^. Pg.items
+            isEnd <- tokIs (end - 1) "end"
+            unless isEnd (unsupported "a function body pgfmt cannot read")
+            -- Each statement starts after @atomic@ or after a semicolon; one
+            -- right after @atomic@ is kept.
+            semiFirst <- tokIs (at + 2) ";"
+            let first = if semiFirst then at + 3 else at + 2
+            semis <- semicolons first (end - 1)
+            let starts = first : map (+ 1) semis
+            unless (length semis == length stmts) (unsupported "a function body pgfmt cannot read")
+            k <- (<> (if semiFirst then ";" else mempty)) <$> kw "begin atomic"
+            ds <- forM (zip stmts starts) \(st, s) -> do
+                d <- statement st
+                br <- brk mempty s
+                pure (br <> d <> ";")
+            endBrk <- brk mempty (end - 1)
+            e <- kw "end"
+            pure (k <> nest indentSize (mconcat ds) <> endBrk <> e)
     _ -> unsupported "a function body pgfmt does not lay out"
   where
     semicolons j stop
