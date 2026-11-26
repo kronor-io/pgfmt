@@ -12,9 +12,10 @@
 -- the thresholds are "PgFmt.Render"'s, function for function. Where
 -- "PgFmt.Render" hands a node to postgresql-syntax's own renderer (and
 -- lower-cases the result), this module writes that renderer's spelling too
--- (the 'P' mode below). It departs from "PgFmt.Render" only to keep what the
--- source wrote: dollar-quoted strings, multi-line strings and numbers stay as
--- they are, and comments are laid out rather than refused.
+-- (the 'P' mode below). It departs from "PgFmt.Render" to keep what the
+-- source wrote (dollar-quoted strings, multi-line strings and numbers stay as
+-- they are, and comments are laid out rather than refused), and in one rule:
+-- @values@ rows that all fit go on one line each.
 --
 -- PostgreSQL's parse tree forgets some of what the source said that
 -- postgresql-syntax's AST keeps: redundant parentheses, @!=@ for @<>@,
@@ -3262,21 +3263,34 @@ valuesClause s = do
     rows <- valuesRowsAt s
     k <- kw "values"
     let lastIdx = length rows - 1
-    docs <- forM (zip [(0 :: Int) ..] rows) \(i, (open, items)) -> do
+    laid <- forM rows \(open, items) -> do
         ds <- traverse (top >=> expr MR) items
         close <- matchOf open >>= req "a values row"
         commented <- commentsBetween open close
+        pure (open, close, ds, commented)
+    -- Each row on one line when every row fits and none has a comment in
+    -- it; otherwise one value per line, as "PgFmt.Render" always does.
+    let oneLine = all (\(_, _, ds, commented) -> not commented && len (inlineRow ds) <= valuesRowInlineThreshold) laid
+    docs <- forM (zip [(0 :: Int) ..] laid) \(i, (open, close, ds, commented)) -> do
         bracketed <-
             if commented
                 then do
                     firsts <- listFirsts open close (length ds)
                     bracketListAt ((,close) <$> firsts) ds
                 else pure case ds of
-                    [_] -> "(" <> commaJoin ds <> ")"
+                    [_] -> inlineRow ds
+                    _ | oneLine -> inlineRow ds
                     _ -> bracketList ds
         b <- brk mempty open
         pure (b <> if i < lastIdx then bracketed <> "," else bracketed)
     pure (k <> nest indentSize (mconcat docs))
+  where
+    inlineRow ds = "(" <> commaJoin ds <> ")"
+
+
+-- | The longest @values@ row that goes on one line.
+valuesRowInlineThreshold :: Int
+valuesRowInlineThreshold = 100
 
 
 valuesP :: Pg.SelectStmt -> R D

@@ -39,8 +39,6 @@ sameAsRender =
     , "select a from t for update of t skip locked"
     , "select distinct on (a) a, b from t"
     , "select a, count(*) from t group by rollup (a, b) having count(*) > 1"
-    , "values (1, 'a'), (2, 'b')"
-    , "insert into t (a, b) values (1, 2) on conflict (a) do update set b = excluded.b where t.b <> excluded.b returning *"
     , "insert into t as x (a, b, c, d) select 1, 2, 3, 4 on conflict on constraint t_pk do nothing"
     , "insert into t default values"
     , "update t set a = 1, b = 2 from u where t.id = u.id returning t.a as aa, t.b bb"
@@ -79,6 +77,13 @@ expected =
     , (True, "select name, type from t where value = 1 and y between 1 and 2", "SELECT\n    name\n  , type\nFROM t\nWHERE value = 1\n  AND y BETWEEN 1 AND 2")
     , (False, "select x::varchar(10), y::time(3) with time zone from t", "select\n    x::varchar (10)\n  , y::time (3) with time zone\nfrom t")
     , (False, "select E'a\\nb', 1.50", "select\n    E'a\\nb'\n  , 1.50")
+    , -- Values rows go on one line each when every row fits, unlike
+      -- "PgFmt.Render"; a row too long, or with a comment inside, puts
+      -- every row's values one per line.
+      (False, "values (1, 'a'), (2, 'b')", "values\n    (1, 'a'),\n    (2, 'b')")
+    , (False, "insert into t (a, b) values (1, 2) on conflict (a) do update set b = excluded.b where t.b <> excluded.b returning *", "insert into t\n    (a, b)\nvalues\n    (1, 2)\non conflict (a)\ndo update set\n    b = excluded.b\nwhere t.b <> excluded.b\nreturning *")
+    , (False, "values (1, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'), (2, 'b')", "values\n    ( 1\n    , 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'\n    ),\n    ( 2\n    , 'b'\n    )")
+    , (False, "values (1, -- one\n 'a'), (2, 'b')", "values\n    ( 1 -- one\n    , 'a'\n    ),\n    ( 2\n    , 'b'\n    )")
     , -- Dollar-quoted strings are kept as written; plain ones continued over
       -- lines are joined.
       (False, "select $$it's$$, $f$ a\n b $f$, 'a'\n  'b'", "select\n    $$it's$$\n  , $f$ a\n b $f$\n  , 'ab'")
@@ -92,7 +97,7 @@ expected =
       (False, "select f(a, -- first\n  b)", "select f(\n      a -- first\n    , b\n)")
     , (False, "select x from t where a in (1, -- one\n  2) and b = 1", "select x\nfrom t\nwhere a in (\n      1 -- one\n    , 2\n)\n  and b = 1")
     , (False, "select array[1, -- one\n  2]", "select array[\n      1 -- one\n    , 2\n]")
-    , (False, "values (1, 'a'), -- one\n  (2, 'b')", "values\n    ( 1\n    , 'a'\n    ), -- one\n    ( 2\n    , 'b'\n    )")
+    , (False, "values (1, 'a'), -- one\n  (2, 'b')", "values\n    (1, 'a'), -- one\n    (2, 'b')")
     , (False, "update t set a = 1, -- the a\n  b = 2 where id = 1", "update t\nset\n    a = 1 -- the a\n  , b = 2\nwhere id = 1")
     , (False, "insert into t (a, b) -- columns\n  select 1, 2 -- values\n  on conflict do nothing", "insert into t\n    (a, b) -- columns\nselect\n    1\n  , 2 -- values\non conflict\ndo nothing")
     , (False, "select a from t group by -- grouped\n  a", "select a\nfrom t\ngroup by -- grouped\n    a")

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+* `values` rows go on one line each, `(1, 'a'),`, when every row of the list
+  fits in 100 characters and none has a comment inside it; otherwise each
+  row's values still go one per line. Lookup-table inserts now read as a
+  table. On Kronor's migrations this changes 267 files, only in line breaks
+  and spacing.
+
 * The `syntax` backend lays out plain SQL statements with comments inside
   them, instead of leaving them as they are (or, with `--backend auto`, to
   `libpg-query`). Each comment goes where the layout breaks a line at its
