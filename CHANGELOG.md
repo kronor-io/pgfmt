@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.0.1
+
+* Static Linux binaries for x86_64 and aarch64 on each GitHub release, with
+  bash, zsh and fish completions. They are built against musl and run on any
+  Linux distribution:
+
+      curl -fsSL "https://github.com/kronor-io/pgfmt/releases/latest/download/pgfmt-$(uname -m)-linux.tar.xz" | tar -xJ -C ~/.local
+
 ## 0.1.0.0
 
 First release.

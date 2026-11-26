@@ -1,6 +1,6 @@
 cabal-version: 3.0
 name:          pgfmt
-version:       0.1.0.0
+version:       0.1.0.1
 synopsis:      Format PostgreSQL, checked against PostgreSQL's own parser
 description:
   pgfmt formats SQL files statement by statement. Each statement is laid out
