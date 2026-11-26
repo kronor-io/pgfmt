@@ -158,8 +158,10 @@ pgfmt's own types.
 - **Meaning from the tree, spelling from the tokens.** Decide what a construct is
   from libpg_query's parse tree. Read the source tokens only for what the tree
   forgets, which is how it was spelled, its parentheses and its comments.
-- **Every parenthesis is placed once.** Code that asks how many parentheses wrap
-  a node goes through `remembered`, so that asking again gives the same answer.
+- **Every parenthesis is placed once.** Code that places the parentheses around
+  a node, which makes them that node's, goes through `remembered`, so that asking
+  again gives the same answer. Code that only reads the source's parentheses,
+  such as `selectParensPeek`, places nothing and needs no memo.
 - **"PgFmt.Layout" follows "PgFmt.Render".** The DML layout is "PgFmt.Render"'s,
   function for function, and is named after it. Change both together, or say
   why they differ.
@@ -192,6 +194,11 @@ Some rules are deliberately not enforced:
 Each of these would be met by worse code.
 
 ## How the rules are checked
+
+The checks catch only the plainest cases of their rules. `PgfmtSmallWhere` does
+not see several stages in a `where` block of fewer than twelve bindings, and
+`PgfmtNamedTuples` does not see positional data inside a record's fields. Review
+covers the rest.
 
 | Rule | Check |
 |---|---|
