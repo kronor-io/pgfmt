@@ -161,6 +161,14 @@ expected =
     , (False, "revoke all on function f(bigint, text) from public cascade", "revoke all on function f(bigint, text) from public cascade")
     , (False, "grant select (a, b) on t -- why\nto x with grant option", "grant select (a, b)\n    on t -- why\n    to x with grant option")
     , (False, "grant data_worker_ro to \"kronor-worker-read-csv\"", "grant data_worker_ro to \"kronor-worker-read-csv\"")
+    , -- An index's include and storage options, on its on line.
+      (False, "create unique index i on t using gin (a gin_trgm_ops) include (b, c) nulls not distinct with (fastupdate = off) where a > 0", "create unique index i\n    on t using gin (a gin_trgm_ops) include (b, c) nulls not distinct with (fastupdate = off)\n    where a > 0")
+    , (True, "alter table t alter constraint fk deferrable initially deferred, add constraint k primary key using index i", "ALTER TABLE t\n    ALTER CONSTRAINT fk DEFERRABLE INITIALLY DEFERRED,\n    ADD CONSTRAINT k PRIMARY KEY USING INDEX i")
+    , -- A long key using an index breaks before using.
+      (False, "alter table t add constraint uq_amex_file_summary_file_payee unique using index uq_amex_file_summary_file_payee", "alter table t\n    add constraint uq_amex_file_summary_file_payee unique\n        using index uq_amex_file_summary_file_payee")
+    , -- A partition: each clause on a line of its own.
+      (False, "create table if not exists s.t_p0 partition of s.t for values from (0) to (250000000)", "create table if not exists s.t_p0\npartition of s.t\nfor values from (0) to (250000000)")
+    , (True, "create table p_a partition of p for values in ('a', 'b')", "CREATE TABLE p_a\nPARTITION OF p\nFOR VALUES IN ('a', 'b')")
     ]
 
 
@@ -168,11 +176,11 @@ expected =
 refused :: [Text]
 refused =
     [ "create sequence s"
-    , "create index i on t (a) include (b)"
+    , "create index i on t (a) tablespace fast"
     , "alter table t attach partition p for values from (1) to (2)"
     , "create table t (a int, exclude using gist (a with =))"
     , "create table t (a int) with (fillfactor = 70)"
-    , "create table p partition of t for values from (1) to (2)"
+    , "create table p partition of t (a primary key) for values from (1) to (2)"
     , "create recursive view v (n) as select 1 union all select n + 1 from v"
     , "grant select on t to a -- why\nwith grant option"
     , "select x from t where a similar to 'b'"

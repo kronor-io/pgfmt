@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+* The `syntax` backend lays out more of the tables, indexes and `alter
+  table`s it used to leave to `libpg-query`: an index's `include (...)` and
+  `with (...)`, on its `on` line; `alter constraint ... deferrable`; `primary
+  key using index` and `unique using index`, which break before `using` if
+  long; and `create table ... partition of ... for values ...`, each clause
+  on a line of its own. On Kronor's migrations this lays out 25 more
+  statements, changing 13 files (24 in upper case).
+
 * The `syntax` backend lays out `create trigger`, `grant` and `revoke`. A
   trigger has each clause on a line of its own, at the statement's column,
   its `when` condition broken like a `check`'s if long. A `grant` or `revoke`
