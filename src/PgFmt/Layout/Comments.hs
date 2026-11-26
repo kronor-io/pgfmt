@@ -167,4 +167,3 @@ clauseAt alternatives n = case locsNode n of
     ls -> do
         i <- tokAt (minimum ls)
         firstJustM (`wordsBefore` i) alternatives
-
