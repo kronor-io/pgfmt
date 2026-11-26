@@ -249,8 +249,9 @@ layOut opts column code = do
     attempt <- runBackend opts column code (comments > 0)
     case attempt of
         Left outcome -> pure (Left outcome)
-        Right (used, alreadyCased, formatted0) -> do
-            cased <- if alreadyCased then pure (Right formatted0) else applyKeywordCase opts used code formatted0
+        Right laid -> do
+            let used = laid.backend
+            cased <- if laid.keywordsCased then pure (Right laid.text) else applyKeywordCase opts used code laid.text
             case cased of
                 Left reason -> pure (Left (Failed reason))
                 Right formatted1 -> do
@@ -275,9 +276,17 @@ formatEmbedded opts column query = do
         _ -> pure (Right Nothing)
 
 
--- | Lay out one statement, or say why not. With the layout, whether its
--- keywords are already in the requested case.
-runBackend :: Options -> Int -> ByteString -> Bool -> IO (Either Outcome (Backend, Bool, Text))
+-- | A statement as a backend laid it out.
+data Laid = Laid
+    { backend :: Backend
+    , keywordsCased :: Bool
+    -- ^ Whether its keywords are already in the requested case.
+    , text :: Text
+    }
+
+
+-- | Lay out one statement, or say why not.
+runBackend :: Options -> Int -> ByteString -> Bool -> IO (Either Outcome Laid)
 runBackend opts column body interiorComments = case opts.backend of
     Syntax -> syntax body
     LibPgQuery -> libpgQuery body
@@ -293,13 +302,13 @@ runBackend opts column body interiorComments = case opts.backend of
         PlainSql -> do
             laid <- Layout.formatStatementAt (opts.keywordCase == Upper) column sql
             pure case laid of
-                Right formatted -> Right (Syntax, True, formatted)
+                Right formatted -> Right Laid{backend = Syntax, keywordsCased = True, text = formatted}
                 Left reason -> Left (Kept ("pgfmt does not lay it out: " <> reason))
         HasqlTh
             -- postgresql-syntax's tree has no comments to place.
             | interiorComments -> pure (Left (Kept "comments inside the statement"))
             | otherwise -> pure case Render.formatStatement opts.dialect (decode sql) of
-                Right formatted -> Right (Syntax, False, formatted)
+                Right formatted -> Right Laid{backend = Syntax, keywordsCased = False, text = formatted}
                 Left (Unsupported _) -> Left (Kept "postgresql-syntax does not parse it")
                 Left (RendererBug reason) -> Left (Failed reason)
     libpgQuery sql = do
@@ -310,7 +319,7 @@ runBackend opts column body interiorComments = case opts.backend of
                 printed <- LibPgQuery.deparsePretty opts.pretty (Just sql) tree
                 pure case printed of
                     Left err -> Left (Kept ("libpg_query could not deparse it: " <> err.message))
-                    Right formatted -> Right (LibPgQuery, False, T.strip formatted)
+                    Right formatted -> Right Laid{backend = LibPgQuery, keywordsCased = False, text = T.strip formatted}
 
 -- | Spell the keywords of a backend's output in the chosen case.
 --
