@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+* The `syntax` backend lays out `create index` and `alter table` too, in the
+  style they are usually written: an index's `on` and `where` on lines of
+  their own (`using` only if written, which `libpg-query` adds), an `alter
+  table`'s actions one per line with the comma at the end (keeping `drop
+  column`'s `column`, which `libpg-query` drops). A long condition, in an
+  index's `where` or a table's `check`, breaks at its top-level `and`s or
+  `or`s, a long group in parentheses inside it on lines of its own. Names
+  longer than PostgreSQL's 63 bytes, which its parse tree cuts short, are
+  written as the source has them. On Kronor's migrations this lays out
+  3,015 more statements, changing 746 files; none fails the parse-tree
+  check, and formatting again changes nothing.
+
 * The `syntax` backend lays out `create table`, `create view`, `create
   materialized view` and `create table ... as`, which went to `libpg-query`
   before. A table has one column or constraint per line with the comma at
