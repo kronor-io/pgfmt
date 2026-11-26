@@ -1168,21 +1168,29 @@ createTrigger t = do
     let nameAt = trigAt + 1
     name <- identAt nameAt (t ^. Pg.trigname)
     end <- (+ 1) <$> lastTok
-    starts <- clauseStarts (nameAt + 1) end
-    case starts of
-        s0 : _ | s0 == nameAt + 1 -> pure ()
+    clauses <- clauseStarts (nameAt + 1) end
+    case clauses of
+        (s0, _) : _ | s0 == nameAt + 1 -> pure ()
         _ -> unsupported "a trigger pgfmt cannot read"
-    let ends = drop 1 starts ++ [end]
-    ds <- forM (zip starts ends) \(s, e) -> do
-        w <- tokL s
-        d <- case w of
-            "when" -> do
+    -- The clauses the tree says are there are the ones found.
+    let found kind = kind `elem` map snd clauses
+    unless
+        ( found When == isJust (t ^. Pg.maybe'whenClause)
+            && found Referencing == not (null (t ^. Pg.transitionRels))
+            && found FromTable == isJust (t ^. Pg.maybe'constrrel)
+        )
+        (unsupported "a trigger pgfmt cannot read")
+    let starts = map fst clauses
+        ends = drop 1 starts ++ [end]
+    ds <- forM (zip clauses ends) \((s, kind), e) -> do
+        d <- case kind of
+            When -> do
                 close <- expectParen (s + 1)
                 unless (close == e - 1) (unsupported "a trigger pgfmt cannot read")
                 c <- req "a trigger's condition" (t ^. Pg.maybe'whenClause)
                 k <- kw "when"
                 (k <+>) <$> checkCondition c
-            "execute" -> do
+            Execute -> do
                 names <- strsOf (t ^. Pg.funcname)
                 ws <- wordsRun s (s + 2)
                 f <- qualNameAt (s + 2) names
@@ -1218,7 +1226,41 @@ createTrigger t = do
                 if w == "("
                     then matchOf j >>= maybe (unsupported "an unclosed parenthesis") (\c -> clauseStarts (c + 1) b)
                     else clauseStarts (j + 1) b
-            pure (if starts then j : rest else rest)
+            pure case triggerClause prev w next of
+                Just kind -> (j, kind) : rest
+                Nothing -> rest
+
+
+-- | A clause of @create trigger@.
+data TriggerClause
+    = -- | @before@, @after@ or @instead of@, and the events.
+      Timing
+    | OnTable
+    | -- | A constraint trigger's @from@ table.
+      FromTable
+    | -- | @deferrable@, @not deferrable@, @initially ...@.
+      Deferral
+    | Referencing
+    | ForEach
+    | When
+    | Execute
+    deriving stock (Eq)
+
+
+-- | The clause a word starts, given the words around it, if it starts one.
+triggerClause :: Text -> Text -> Text -> Maybe TriggerClause
+triggerClause prev w next = case w of
+    _ | w `elem` ["before", "after", "instead"] -> Just Timing
+    "on" -> Just OnTable
+    "from" -> Just FromTable
+    "referencing" -> Just Referencing
+    "for" -> Just ForEach
+    "when" -> Just When
+    "execute" -> Just Execute
+    "not" | next == "deferrable" -> Just Deferral
+    "deferrable" | prev /= "not" -> Just Deferral
+    "initially" | prev /= "deferrable" -> Just Deferral
+    _ -> Nothing
 
 
 -- | The longest @grant@ or @revoke@ that stays on one line.
