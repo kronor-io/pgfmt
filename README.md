@@ -185,11 +185,12 @@ $ echo 'selec 1;' | pgfmt
 ### See what was skipped
 
 Some statements are left as they were on purpose, for example when the
-renderer cannot keep a comment inside them. `-v` says which ones, and why:
+renderer has no place for a comment inside them. `-v` says which ones, and
+why:
 
 ```console
 $ pgfmt -v --backend syntax queries.sql
-queries.sql:2: kept: comments inside the statement
+queries.sql:2: kept: pgfmt does not lay it out: a comment pgfmt cannot place
 ```
 
 ## Choosing a style
@@ -214,14 +215,32 @@ WHERE value > 3;
 Two backends lay statements out, and they have different styles:
 
 - `syntax`: pgfmt's own renderer. It puts commas at the start of lines, and
-  it handles `select`, `insert`, `update`, `delete` and `values` that have no
-  comments inside them. It lays statements out from PostgreSQL's own parse
-  tree (libpg_query's), keeping what the tree forgets from the source:
-  redundant parentheses, `!=`, `as` before an alias, `inner join`, how a type
-  is spelled. A statement with something it does not handle is left to
+  it handles `select`, `insert`, `update`, `delete` and `values`. It lays
+  statements out from PostgreSQL's own parse tree (libpg_query's), keeping
+  what the tree forgets from the source: redundant parentheses, `!=`, `as`
+  before an alias, `inner join`, how a type is spelled, and comments. A
+  comment goes where the layout breaks a line at its place: one that shares a
+  line with code ends the line before the break, one on a line of its own
+  stays on a line of its own. A list with a comment in it (select targets,
+  arguments, `in (...)`, `values` rows, ...) puts one item per line:
+
+  ```sql
+  select
+      id -- the key
+      -- what the customer sees
+    , display_name
+  from customers
+  where status in (
+        'active' -- paying
+      , 'trial'
+  );
+  ```
+
+  A statement with something it does not handle, such as a comment with no
+  line break at its place (`a + -- note` and `b` on the next line), is left to
   `libpg-query` (or, with `--backend syntax`, as it is), never guessed at.
   (The SQL of Haskell quasiquotes, which libpg_query cannot parse, is laid out
-  the same way from postgresql-syntax's tree.)
+  the same way from postgresql-syntax's tree, but not with comments inside.)
 - `libpg-query`: libpg_query's pretty-printer. It puts commas at the end of
   lines, and it handles anything PostgreSQL parses, keeping the comments.
 

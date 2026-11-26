@@ -71,8 +71,8 @@ sameAsRender =
     ]
 
 
--- | Statements with an expected layout: keywords in upper case, and what
--- postgresql-syntax could not read.
+-- | Statements with an expected layout: keywords in upper case, what
+-- postgresql-syntax could not read, and comments.
 expected :: [(Bool, Text, Text)]
 expected =
     [ (True, "select a, x::int, x::text, count(*) from t where x is not null", "SELECT\n    a\n  , x::INT\n  , x::text\n  , count(*)\nFROM t\nWHERE x IS NOT NULL")
@@ -81,6 +81,20 @@ expected =
     , (False, "select E'a\\nb', 1.50", "select\n    E'a\\nb'\n  , 1.50")
     , -- A string's lines stay as they are, however deep the layout puts it.
       (False, "with x as (select 'a\nb' as s) select s from x", "with x as (\n    select 'a\nb' as s\n)\nselect s\nfrom x")
+    , -- Comments go where the layout breaks a line at their place: one on a
+      -- line with code at the end of the line before the break, one on a
+      -- line of its own on a line of its own after it.
+      (False, "select a, -- the a\n  -- before b\n  b /* the b */\n  from t -- the t\n  /* where next */ where x = 1", "select\n    a -- the a\n    -- before b\n  , b /* the b */\nfrom t -- the t\n/* where next */\nwhere x = 1")
+    , -- A list with a comment in it takes its multi-line form.
+      (False, "select f(a, -- first\n  b)", "select f(\n      a -- first\n    , b\n)")
+    , (False, "select x from t where a in (1, -- one\n  2) and b = 1", "select x\nfrom t\nwhere a in (\n      1 -- one\n    , 2\n)\n  and b = 1")
+    , (False, "select array[1, -- one\n  2]", "select array[\n      1 -- one\n    , 2\n]")
+    , (False, "values (1, 'a'), -- one\n  (2, 'b')", "values\n    ( 1\n    , 'a'\n    ), -- one\n    ( 2\n    , 'b'\n    )")
+    , (False, "update t set a = 1, -- the a\n  b = 2 where id = 1", "update t\nset\n    a = 1 -- the a\n  , b = 2\nwhere id = 1")
+    , (False, "insert into t (a, b) -- columns\n  select 1, 2 -- values\n  on conflict do nothing", "insert into t\n    (a, b) -- columns\nselect\n    1\n  , 2 -- values\non conflict\ndo nothing")
+    , (False, "select a from t group by -- grouped\n  a", "select a\nfrom t\ngroup by -- grouped\n    a")
+    , (False, "with x as (select 1), -- first\n  y as (select 2) select * from x, y", "with x as (\n    select 1\n), -- first\ny as (\n    select 2\n)\nselect *\nfrom x, y")
+    , (True, "select 1 -- one\nunion all select 2", "SELECT 1 -- one\nUNION ALL\nSELECT 2")
     ]
 
 
@@ -90,6 +104,9 @@ refused =
     [ "create table t (a int)"
     , "select x from t where a similar to 'b'"
     , "select 1; select 2"
+    , -- No line break where the comment is.
+      "select a + -- inside\n  b from t"
+    , "select 'a' -- between the parts of a string\n  'b'"
     ]
 
 
