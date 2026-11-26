@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+* The `syntax` backend lays out plain SQL from libpg_query's parse tree
+  (PostgreSQL 18's own parser) instead of postgresql-syntax's, in the same
+  layout. On Kronor's migrations, every one of the 2,020 statements it formatted
+  before (PL/pgSQL bodies included) comes out byte for byte the same, with
+  `--keyword-case lower` and `upper`. It now also lays out DML that
+  postgresql-syntax could not parse (`E'...'` strings, `varchar(n)` casts,
+  column definition lists, `tablesample`, ...): 96 more statements there.
+  Multi-line string literals are no longer re-indented, and numbers are kept
+  as written (`1.50`), so statements the old renderer refused as changed now
+  format. Statements it does not handle are still left to `libpg-query`. The
+  hasql-th dialect still uses postgresql-syntax.
 * The safety check compares each statement's parse tree, source positions
   aside, instead of SQL deparsed from it: two different trees the deparser
   prints alike no longer pass. On Kronor's 4,414 migrations the output is

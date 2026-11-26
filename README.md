@@ -215,7 +215,13 @@ Two backends lay statements out, and they have different styles:
 
 - `syntax`: pgfmt's own renderer. It puts commas at the start of lines, and
   it handles `select`, `insert`, `update`, `delete` and `values` that have no
-  comments inside them.
+  comments inside them. It lays statements out from PostgreSQL's own parse
+  tree (libpg_query's), keeping what the tree forgets from the source:
+  redundant parentheses, `!=`, `as` before an alias, `inner join`, how a type
+  is spelled. A statement with something it does not handle is left to
+  `libpg-query` (or, with `--backend syntax`, as it is), never guessed at.
+  (The SQL of Haskell quasiquotes, which libpg_query cannot parse, is laid out
+  the same way from postgresql-syntax's tree.)
 - `libpg-query`: libpg_query's pretty-printer. It puts commas at the end of
   lines, and it handles anything PostgreSQL parses, keeping the comments.
 
