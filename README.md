@@ -554,3 +554,14 @@ package pgfmt
 cabal build exe:pgfmt
 cabal test
 ```
+
+## Contributing
+
+`docs/readability.md` says how pgfmt's code is meant to read. Inside
+`nix develop`, `scripts/check` runs the checks that CI runs:
+
+```bash
+scripts/check fast    # fourmolu
+scripts/check lint    # pgfmt's hopinion rules, in lint/
+scripts/check full    # both, then every test
+```
