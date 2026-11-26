@@ -860,55 +860,36 @@ createFunction statement f = do
             else pure Nothing
     -- Where the body starts: @as@, or a SQL-standard body after every
     -- clause.
-    (bodyAt, standard) <- case (f ^. Pg.maybe'sqlBody, [s | (de, s) <- opts, de ^. Pg.defname == "as"]) of
-        (Nothing, [s]) -> pure (s, Nothing)
-        (Just b, []) | Just at <- standardAt -> pure (at, Just b)
+    body <- case (f ^. Pg.maybe'sqlBody, [s | (de, s) <- opts, de ^. Pg.defname == "as"]) of
+        (Nothing, [s]) -> pure (QuotedBody s)
+        (Just b, []) | Just at <- standardAt -> pure (StandardBody at b)
         _ -> unsupported "a function without a body pgfmt can place"
-    -- A SQL-standard body ends the last clause; @as@ is a clause itself.
-    let ends = map (if isJust standard then min bodyAt else id) (drop 1 optStarts ++ [end])
-        clauses = zip3 (map fst opts) optStarts ends
-        before = [(s, e) | (_, s, e) <- clauses, s < bodyAt]
-        after = [(s, e) | (_, s, e) <- clauses, s > bodyAt]
-        asEnd = fromMaybe end (listToMaybe [e | (_, s, e) <- clauses, s == bodyAt])
-    beforeDs <- forM before \(s, e) -> do
-        d <- looseRun s e
-        b <- brk mempty s
+    let bodyAt = case body of
+            QuotedBody at -> at
+            StandardBody at _ -> at
+        -- A SQL-standard body ends the last clause; @as@ is a clause itself.
+        ends = case body of
+            StandardBody{} -> map (min bodyAt) (drop 1 optStarts ++ [end])
+            QuotedBody{} -> drop 1 optStarts ++ [end]
+        clauses = zipWith Clause optStarts ends
+        before = [c | c <- clauses, c.start < bodyAt]
+        after = [c | c <- clauses, c.start > bodyAt]
+        asEnd = fromMaybe end (listToMaybe [c.end | c <- clauses, c.start == bodyAt])
+    beforeDs <- forM before \c -> do
+        d <- looseRun c.start c.end
+        b <- brk mempty c.start
         pure (b <> d)
     returnsLine <- case returnsD of
         Nothing -> pure mempty
         Just d -> (<> d) <$> brk mempty (close + 1)
     argsD <- itemList functionHeaderThreshold (header <+> name) argDs close
     let clauseLines = returnsLine <> mconcat beforeDs
-    bodyD <- case standard of
-        Just b -> do
-            bb <- brk mempty bodyAt
-            d <- standardBody statement b bodyAt end
+    bodyD <- case body of
+        StandardBody at b -> do
+            bb <- brk mempty at
+            d <- standardBody statement b at end
             pure (bb <> d)
-        Nothing -> do
-            asK <- kw "as"
-            bodyBrk <- brk mempty (bodyAt + 1)
-            -- The opening quote lines up with the closing one, when that
-            -- starts a line of its own.
-            col <- asks (.column)
-            bodyTok <- tokM (bodyAt + 1)
-            let closeCol = case bodyTok of
-                    Just tk | asEnd == bodyAt + 2, Just tag <- dollarTag tk.text -> do
-                        let lastLine = snd (T.breakOnEnd "\n" tk.text)
-                            (spaces, rest) = T.span (== ' ') lastLine
-                        if T.isInfixOf "\n" tk.text && rest == tag then Just (T.length spaces) else Nothing
-                    _ -> Nothing
-                openIndent = maybe mempty (\c -> pretty (T.replicate (max 0 (c - col)) " ")) closeCol
-            body <- looseRun (bodyAt + 1) asEnd
-            afterDs <- forM after \(s, e) -> looseRun s e
-            -- The clauses after the body follow it on its last line; with a
-            -- comment among them, each after the first on a line of its own.
-            commented <- or <$> forM (drop 1 after) \(s, _) -> not . null <$> gapBefore s
-            rest <-
-                if commented
-                    then forM (zip (drop 1 after) (drop 1 afterDs)) \((s, _), d) -> (<> d) <$> brk mempty s
-                    else pure [" " <> d | d <- drop 1 afterDs]
-            let firstAfter = maybe mempty (" " <>) (listToMaybe afterDs)
-            pure (" " <> asK <> bodyBrk <> openIndent <> body <> firstAfter <> (if commented then nest indentSize (mconcat rest) else mconcat rest))
+        QuotedBody at -> quotedBody at asEnd after
     pure (header <+> name <> argsD <> nest indentSize clauseLines <> bodyD)
   where
     firstName j = do
@@ -917,6 +898,50 @@ createFunction statement f = do
             Just tk | tk.kind == Pg.IDENT || (tk.isKeyword && T.toLower tk.text `notElem` ["create", "or", "replace", "function", "procedure"]) -> pure j
             Just _ -> firstName (j + 1)
             Nothing -> unsupported "a function pgfmt cannot read"
+
+
+-- | Where a function's body is: in quotes after @as@ at this token, or a
+-- SQL-standard one starting at this token.
+data FunctionBody
+    = QuotedBody Int
+    | StandardBody Int Pg.Node
+
+
+-- | A clause of a function, from its first token to before @end@.
+data Clause = Clause
+    { start :: Int
+    , end :: Int
+    }
+
+
+-- | A quoted body after @as@ at this token, up to before @asEnd@, and the
+-- clauses after it. The body starts the line after @as@, as written; its
+-- opening quote lines up with the closing one, when that starts a line of
+-- its own. The clauses after it follow it on its last line; with a comment
+-- among them, each after the first on a line of its own.
+quotedBody :: Int -> Int -> [Clause] -> R D
+quotedBody asAt asEnd after = do
+    asK <- kw "as"
+    bodyBrk <- brk mempty (asAt + 1)
+    col <- asks (.column)
+    bodyTok <- tokM (asAt + 1)
+    let closeCol = case bodyTok of
+            Just tk | asEnd == asAt + 2, Just tag <- dollarTag tk.text -> do
+                let lastLine = snd (T.breakOnEnd "\n" tk.text)
+                    (spaces, rest) = T.span (== ' ') lastLine
+                if T.isInfixOf "\n" tk.text && rest == tag then Just (T.length spaces) else Nothing
+            _ -> Nothing
+        openIndent = maybe mempty (\c -> pretty (T.replicate (max 0 (c - col)) " ")) closeCol
+    body <- looseRun (asAt + 1) asEnd
+    afterDs <- forM after \c -> looseRun c.start c.end
+    commented <- or <$> forM (drop 1 after) \c -> not . null <$> gapBefore c.start
+    rest <-
+        if commented
+            then forM (zip (drop 1 after) (drop 1 afterDs)) \(c, d) -> (<> d) <$> brk mempty c.start
+            else pure [" " <> d | d <- drop 1 afterDs]
+    let firstAfter = maybe mempty (" " <>) (listToMaybe afterDs)
+        clausesAfter = if commented then nest indentSize (mconcat rest) else mconcat rest
+    pure (" " <> asK <> bodyBrk <> openIndent <> body <> firstAfter <> clausesAfter)
 
 
 -- | Where a SQL-standard body starts: @begin atomic@ or @return@, at or
