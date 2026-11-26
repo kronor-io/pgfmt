@@ -8,7 +8,6 @@ import Control.Monad.State.Strict (gets, modify')
 import Data.Bits ((.&.))
 import Data.Int (Int32)
 import Data.IntSet qualified as IS
-import Data.Map.Strict qualified as Map
 import Data.Maybe (catMaybes, fromMaybe, isJust)
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -357,7 +356,7 @@ boolRun mode loc sep outer args = hcat . punctuate sep <$> go args
     tryParen x rest p = do
         placed <- isConsumed p
         -- Rendering again finds the same run: the pair is placed by now.
-        mine <- gets (Map.member (4, p, 0, 0) . (.memo))
+        mine <- gets (IS.member p . (.boolGroups))
         mm <- matchOf p
         case mm of
             Just m | not placed || mine -> do
@@ -366,7 +365,7 @@ boolRun mode loc sep outer args = hcat . punctuate sep <$> go args
                 case found of
                     Just (inside, after) -> do
                         consume p
-                        modify' \st -> st{memo = Map.insert (4, p, 0, 0) 1 st.memo}
+                        modify' \st -> st{boolGroups = IS.insert p st.boolGroups}
                         pure (Just (p, inside, after))
                     Nothing -> pure Nothing
             _ -> pure Nothing

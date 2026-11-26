@@ -105,7 +105,7 @@ formatStatementAt upperKeywords column sql = do
         (Right tree, Right scan) -> case tree ^. Pg.stmts of
             [rawStmt] | Just stmt <- rawStmt ^. Pg.maybe'stmt -> do
                 let env = (mkEnv upperKeywords sql scan stmt){column}
-                (doc, st) <- runStateT (runReaderT (statement stmt) env) St{consumed = IS.empty, memo = Map.empty}
+                (doc, st) <- runStateT (runReaderT (statement stmt) env) St{consumed = IS.empty, parenCounts = Map.empty, boolGroups = IS.empty}
                 let unplaced = [i | (i, t) <- IM.toList env.toks, t.text == "(", not (IS.member i st.consumed)]
                 unless (null unplaced) (Left "a parenthesis pgfmt cannot place")
                 Right (renderStrict (layoutPretty layoutOpts doc))

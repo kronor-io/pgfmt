@@ -39,25 +39,13 @@ mkE parent n = do
     lv <-
         if null ls
             then pure 0
-            else do
-                let key = (tag, minimum ls, maximum ls, length ls)
-                known <- gets (Map.lookup key . (.memo))
-                case known of
-                    Just k -> pure k
-                    Nothing -> do
-                        k <- case node n of
-                            Just (Pg.Node'AIndirection ind) -> indirectionLevels ind (IS.fromList ls)
-                            _ -> do
-                                s0 <- tokAt (minimum ls)
-                                e0 <- tokAt (maximum ls)
-                                levels s0 e0 (IS.fromList ls) (parentTakes parent)
-                        modify' \s -> s{memo = Map.insert key k s.memo}
-                        pure k
+            else case node n of
+                Just (Pg.Node'AIndirection ind) -> remembered AroundIndirection ls (indirectionLevels ind (IS.fromList ls))
+                _ -> remembered AroundExpr ls do
+                    s0 <- tokAt (minimum ls)
+                    e0 <- tokAt (maximum ls)
+                    levels s0 e0 (IS.fromList ls) (parentTakes parent)
     pure E{en = n, lv, parent}
-  where
-    tag = case node n of
-        Just (Pg.Node'AIndirection _) -> 1
-        _ -> 0
 
 
 -- | Whether a parenthesis pair is the parent expression's rather than the

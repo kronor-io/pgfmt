@@ -89,9 +89,39 @@ data Cmt = Cmt
 data St = St
     { consumed :: IS.IntSet
     -- ^ Opening parentheses placed so far, by token index.
-    , memo :: Map.Map (Int, Int, Int, Int) Int
+    , parenCounts :: Map.Map (ParenQuestion, NodeSpan) Int
     -- ^ How many parentheses wrap a node, once worked out.
+    , boolGroups :: IS.IntSet
+    -- ^ Opening parentheses placed around a group of a boolean run's
+    -- arguments, which laying the run out again finds again.
     }
+
+
+-- | What is asked of a node's parentheses: those around it as an
+-- expression, as an indirection (whose own come before its argument's), as
+-- a select, or as a join.
+data ParenQuestion = AroundExpr | AroundIndirection | AroundSelect | AroundJoin
+    deriving stock (Eq, Ord)
+
+
+-- | A node, by its locations: the first, the last, and how many.
+data NodeSpan = NodeSpan {firstLoc :: Int, lastLoc :: Int, locCount :: Int}
+    deriving stock (Eq, Ord)
+
+
+-- | Work out once how many parentheses wrap the node with these (non-empty)
+-- locations: placing parentheses must give the same answer when asked
+-- again.
+remembered :: ParenQuestion -> [Int] -> R Int -> R Int
+remembered question ls compute = do
+    let key = (question, NodeSpan{firstLoc = minimum ls, lastLoc = maximum ls, locCount = length ls})
+    known <- gets (Map.lookup key . (.parenCounts))
+    case known of
+        Just k -> pure k
+        Nothing -> do
+            k <- compute
+            modify' \st -> st{parenCounts = Map.insert key k st.parenCounts}
+            pure k
 
 
 type R = ReaderT Env (StateT St (Either Text))

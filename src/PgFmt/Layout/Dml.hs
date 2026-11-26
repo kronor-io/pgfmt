@@ -3,10 +3,8 @@ module PgFmt.Layout.Dml where
 
 import Control.Monad (forM, unless, when, zipWithM)
 import Control.Monad.Reader (asks)
-import Control.Monad.State.Strict (gets, modify')
 import Data.Foldable (toList)
 import Data.IntSet qualified as IS
-import Data.Map.Strict qualified as Map
 import Data.Maybe (catMaybes, fromMaybe, isJust, isNothing, listToMaybe)
 import Data.ProtoLens.Message (Message (..))
 import Data.Text (Text)
@@ -69,20 +67,7 @@ extendOver f bound = do
 selectParens :: Int -> Pg.SelectStmt -> R Int
 selectParens bound s = do
     ls <- nonEmptyLocs (locsMsg s)
-    remembered (2, minimum ls, maximum ls, length ls) (selectParens' bound s ls)
-
-
--- | Work something out about a node once: what places parentheses must give
--- the same answer when asked again.
-remembered :: (Int, Int, Int, Int) -> R Int -> R Int
-remembered key compute = do
-    known <- gets (Map.lookup key . (.memo))
-    case known of
-        Just k -> pure k
-        Nothing -> do
-            k <- compute
-            modify' \st -> st{memo = Map.insert key k st.memo}
-            pure k
+    remembered AroundSelect ls (selectParens' bound s ls)
 
 
 selectParens' :: Int -> Pg.SelectStmt -> [Int] -> R Int
@@ -932,7 +917,7 @@ tableRefFirst n = case node n of
 joinParens :: Pg.JoinExpr -> Pg.Node -> R Int
 joinParens _ n = do
     ls0 <- nonEmptyLocs (locsNode n)
-    remembered (3, minimum ls0, maximum ls0, length ls0) (joinParens' n)
+    remembered AroundJoin ls0 (joinParens' n)
 
 
 joinParens' :: Pg.Node -> R Int
