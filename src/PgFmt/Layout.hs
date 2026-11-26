@@ -24,6 +24,11 @@
 -- as is any node this module does not know. Refused statements are left to
 -- the caller (libpg_query's own printer, or as they are), never guessed at.
 --
+-- Comments are written at the line breaks the layout makes where they are
+-- in the source (see 'brk'); a construct with a comment inside takes its
+-- multi-line form, and a statement with a comment at no line break is
+-- refused.
+--
 -- Keywords are written in the requested case as they are rendered;
 -- identifiers, quoted or not, are never changed.
 module PgFmt.Layout (
@@ -33,7 +38,7 @@ module PgFmt.Layout (
 import Control.Monad (forM, unless, when, zipWithM)
 import Control.Monad.Reader (ReaderT, asks, local, runReaderT)
 import Control.Monad.State.Strict (StateT, gets, modify', runStateT)
-import Control.Monad.Except (MonadError (throwError))
+import Control.Monad.Except (MonadError (catchError, throwError))
 import Data.ByteString (ByteString)
 import Data.Bits ((.&.))
 import Data.ByteString qualified as BS
@@ -59,15 +64,28 @@ import Prettyprinter.Render.Text (renderStrict)
 import Unsafe.Coerce (unsafeCoerce)
 
 
--- | Lay out one DML statement (no comments in it, no semicolon), keywords in
--- upper case if asked, starting at column 0 without a trailing newline.
--- 'Left' says why not: the statement is not DML, or has something this
--- renderer does not handle.
+-- | Lay out one DML statement (no comments before or after it, no
+-- semicolon), keywords in upper case if asked, starting at column 0 without
+-- a trailing newline. 'Left' says why not: the statement is not DML, or has
+-- something this renderer does not handle (a comment it cannot place among
+-- them).
 formatStatement :: Bool -> ByteString -> IO (Either Text Text)
 formatStatement upperKeywords sql = do
     parsed <- L.parse sql
     scanned <- L.scan sql
-    pure case (parsed, scanned) of
+    let laid = render parsed scanned
+    case laid of
+        Right out | Right scan <- scanned, hasComments scan -> do
+            -- Every comment must come out once, in its order: each is
+            -- written where the layout breaks a line at its place in the
+            -- source, and one with no such break is not written at all.
+            again <- L.scan (TE.encodeUtf8 out)
+            pure case again of
+                Right scan' | commentTexts (TE.encodeUtf8 out) scan' == commentTexts sql scan -> laid
+                _ -> Left "a comment pgfmt cannot place"
+        _ -> pure laid
+  where
+    render parsed scanned = case (parsed, scanned) of
         (Left err, _) -> Left err.message
         (_, Left err) -> Left err.message
         (Right tree, Right scan) -> case tree ^. Pg.stmts of
@@ -78,6 +96,16 @@ formatStatement upperKeywords sql = do
                 unless (null unplaced) (Left "a parenthesis pgfmt cannot place")
                 Right (renderStrict (layoutPretty layoutOpts doc))
             _ -> Left "not a single statement"
+    hasComments scan = any isComment (scan ^. Pg.tokens)
+    commentTexts src scan =
+        [ BS.take (fromIntegral (t ^. Pg.end) - fromIntegral (t ^. Pg.start)) (BS.drop (fromIntegral (t ^. Pg.start)) src)
+        | t <- scan ^. Pg.tokens
+        , isComment t
+        ]
+
+
+isComment :: Pg.ScanToken -> Bool
+isComment t = t ^. Pg.token `elem` [Pg.SQL_COMMENT, Pg.C_COMMENT]
 
 
 layoutOpts :: LayoutOptions
@@ -116,6 +144,16 @@ data Env = Env
     , names :: Map.Map Text (Bool, Bool)
     -- ^ Each identifier of the source, case-folded as PostgreSQL does: whether
     -- it is written quoted, and whether unquoted.
+    , cmts :: IM.IntMap [Cmt]
+    -- ^ The comments after each token (by index), in order.
+    }
+
+
+-- | A comment, as written.
+data Cmt = Cmt
+    { ctext :: Text
+    , ownLine :: Bool
+    -- ^ Nothing but whitespace before it on its line.
     }
 
 
@@ -146,8 +184,21 @@ mkEnv upper sql scan stmt =
         , allLocs = IS.fromList (locsNode stmt)
         , upper
         , names = Map.fromListWith (\(a, b) (c, d) -> (a || c, b || d)) (mapMaybe' nameOf ts)
+        , cmts = IM.fromListWith (flip (++)) (comments (-1) 0 (scan ^. Pg.tokens))
         }
   where
+    slice a b = BS.take (b - a) (BS.drop a sql)
+    -- Each comment with the index of the token before it, and whether a line
+    -- break separates it from what precedes it.
+    comments _ _ [] = []
+    comments prev prevEnd (t : rest)
+        | isComment t =
+            (prev, [Cmt{ctext = TE.decodeUtf8Lenient (slice s e), ownLine = prev < 0 || BS.elem 10 (slice prevEnd s)}])
+                : comments prev e rest
+        | otherwise = comments (prev + 1) e rest
+      where
+        s = fromIntegral (t ^. Pg.start)
+        e = fromIntegral (t ^. Pg.end)
     ts =
         [ Tok
             { start = s
@@ -157,7 +208,7 @@ mkEnv upper sql scan stmt =
             , reserved = t ^. Pg.keywordKind == Pg.RESERVED_KEYWORD
             }
         | t <- scan ^. Pg.tokens
-        , t ^. Pg.token `notElem` [Pg.SQL_COMMENT, Pg.C_COMMENT]
+        , not (isComment t)
         , let s = fromIntegral (t ^. Pg.start)
         , let e = fromIntegral (t ^. Pg.end)
         ]
@@ -282,6 +333,169 @@ renderToText = renderStrict . layoutPretty layoutOpts
 
 len :: D -> Int
 len = T.length . renderToText
+
+
+----------------------------------------------------------------------
+-- Comments: each is written at the line break the layout makes where it
+-- is in the source. One on a line with code ends the line before the break;
+-- one on a line of its own gets a line of its own after it. A construct
+-- with a comment inside it takes its multi-line form. A comment with no
+-- break at its place is not written, and the statement is refused.
+----------------------------------------------------------------------
+
+-- | The comments in the gap before a token: after the token before it, and
+-- before that the comma before it if any (a list's separator, which the
+-- source may have before or after a comment).
+gapBefore :: Int -> R [Cmt]
+gapBefore q = do
+    m <- asks (.cmts)
+    sep <- tokIs (q - 1) ","
+    let at p = IM.findWithDefault [] p m
+    pure ((if sep then at (q - 2) else []) ++ at (q - 1))
+
+
+-- | A line break before the token at @q@, with the comments before it;
+-- @lead@ starts each comment line, aligning it with what follows.
+brk :: D -> Int -> R D
+brk lead q = do
+    cs <- gapBefore q
+    let (trailing, rest) = span (not . (.ownLine)) cs
+    pure (mconcat [" " <> raw c.ctext | c <- trailing] <> hardline <> mconcat [lead <> raw c.ctext <> hardline | c <- rest])
+
+
+-- | 'brk' where the token is known, a plain line break where not.
+brkAt :: D -> Maybe Int -> R D
+brkAt lead = maybe (pure hardline) (brk lead)
+
+
+-- | Lines, each with the token it starts at: the comments between them go
+-- at the breaks.
+linesAt :: D -> [(Maybe Int, D)] -> R D
+linesAt _ [] = pure mempty
+linesAt lead ((_, d) : rest) = do
+    ds <- forM rest \(q, x) -> (<> x) <$> brkAt lead q
+    pure (d <> mconcat ds)
+
+
+-- | Whether any comment lies between two tokens.
+commentsBetween :: Int -> Int -> R Bool
+commentsBetween a b = do
+    m <- asks (.cmts)
+    pure case IM.lookupGE a m of
+        Just (p, _) -> p < b
+        Nothing -> False
+
+
+-- | Whether the statement has comments at all.
+anyComments :: R Bool
+anyComments = asks (not . IM.null . (.cmts))
+
+
+-- | The tokens an expression spans: from its first located token to its
+-- last, and on past any parenthesis opened in between.
+spanOf :: Pg.Node -> R (Maybe (Int, Int))
+spanOf n = case locsNode n of
+    [] -> pure Nothing
+    ls -> do
+        s <- tokAt (minimum ls)
+        e <- tokAt (maximum ls)
+        texts <- traverse tokL [s .. e]
+        let depth = length (filter (`elem` ["(", "["]) texts) - length (filter (`elem` [")", "]"]) texts)
+            close i d
+                | d <= 0 = pure (i - 1)
+                | otherwise = do
+                    t <- tokM i
+                    case (.text) <$> t of
+                        Nothing -> pure (i - 1)
+                        Just w
+                            | w `elem` ["(", "["] -> close (i + 1) (d + 1)
+                            | w `elem` [")", "]"] -> close (i + 1) (d - 1)
+                            | otherwise -> close (i + 1) d
+        end <- close (e + 1) depth
+        pure (Just (s, end))
+
+
+-- | Whether an expression has a comment inside it.
+hasCmts :: Pg.Node -> R Bool
+hasCmts n = do
+    any' <- anyComments
+    if not any'
+        then pure False
+        else do
+            sp <- spanOf n
+            maybe (pure False) (uncurry commentsBetween) sp
+
+
+-- | The first token of each item of a comma-separated list between two
+-- tokens (a parenthesis pair), if the commas there are the list's.
+listFirsts :: Int -> Int -> Int -> R (Maybe [Int])
+listFirsts open close n = do
+    texts <- traverse tokL [open + 1 .. close - 1]
+    let commas = go (0 :: Int) (zip [open + 1 ..] texts)
+        go _ [] = []
+        go d ((i, w) : rest)
+            | w `elem` ["(", "["] = go (d + 1) rest
+            | w `elem` [")", "]"] = go (d - 1) rest
+            | w == "," && d == 0 = i : go d rest
+            | otherwise = go d rest
+    pure (if length commas == n - 1 then Just ((open + 1) : map (+ 1) commas) else Nothing)
+
+
+-- | The bracket that closes the one at a token.
+closeOf :: Int -> R (Maybe Int)
+closeOf open = go (open + 1) (0 :: Int)
+  where
+    go i d = do
+        t <- tokM i
+        case (.text) <$> t of
+            Nothing -> pure Nothing
+            Just w
+                | w `elem` ["(", "["] -> go (i + 1) (d + 1)
+                | w `elem` [")", "]"] -> if d == 0 then pure (Just i) else go (i + 1) (d - 1)
+                | otherwise -> go (i + 1) d
+
+
+-- | The first token of each item of a bracketed list, and its closing
+-- bracket, when it has comments in it.
+commentedList :: Int -> Int -> R (Maybe ([Int], Int))
+commentedList open n = do
+    mclose <- closeOf open
+    case mclose of
+        Nothing -> pure Nothing
+        Just close -> do
+            commented <- commentsBetween open close
+            if not commented
+                then pure Nothing
+                else fmap (,close) <$> listFirsts open close n
+
+
+-- | The words before a token, back over opening parentheses: where the
+-- first of them is, if they are these.
+wordsBefore :: [Text] -> Int -> R (Maybe Int)
+wordsBefore ws i = do
+    j <- back (i - 1)
+    let from = j - length ws + 1
+    actual <- traverse tokL [from .. j]
+    pure (if from >= 0 && actual == ws then Just from else Nothing)
+  where
+    back j = do
+        p <- tokIs j "("
+        if p then back (j - 1) else pure j
+
+
+-- | A clause's first token, from the keywords that start it and the node
+-- that follows them.
+clauseAt :: [[Text]] -> Pg.Node -> R (Maybe Int)
+clauseAt alternatives n = case locsNode n of
+    [] -> pure Nothing
+    ls -> do
+        i <- tokAt (minimum ls)
+        firstJustM (`wordsBefore` i) alternatives
+
+
+-- | What a check finds, or 'Nothing' where it fails.
+attempt :: R a -> R (Maybe a)
+attempt m = (Just <$> m) `catchError` \_ -> pure Nothing
 
 
 ----------------------------------------------------------------------
@@ -1027,9 +1241,16 @@ aExpr mode e a = case a ^. Pg.kind of
             Just (Pg.Node'List xs) -> pure (xs ^. Pg.items)
             _ -> unsupported "an in without a list"
         ld <- expr mode l
-        ds <- traverse (child e.en >=> expr MP) items
         k <- kw (if names == ["<>"] then "not in" else "in")
-        pure (ld <+> k <+> "(" <> commaJoin ds <> ")")
+        positions <- commentedList open (length items)
+        case positions of
+            Nothing -> do
+                ds <- traverse (child e.en >=> expr MP) items
+                pure (ld <+> k <+> "(" <> commaJoin ds <> ")")
+            Just _ -> do
+                ds <- traverse (child e.en >=> exprMaybeWrap) items
+                (rows, end) <- argRowsAt positions ds
+                pure (ld <+> k <+> "(" <> nest indentSize rows <> end <> ")")
     k | k `elem` [Pg.AEXPR_LIKE, Pg.AEXPR_ILIKE] -> do
         names <- strsOf (a ^. Pg.name)
         word <- case names of
@@ -1226,9 +1447,10 @@ arrayKeyword a = tokAt (fromIntegral (a ^. Pg.location)) >>= (`tokIs` "array")
 arrayExpr :: Mode -> E -> Pg.A_ArrayExpr -> R D
 arrayExpr mode e a = do
     keyword <- arrayKeyword a
-    inner <- arrayBody mode e a
+    commented <- hasCmts e.en
+    inner <- if commented then arrayWrapped e a else arrayBody mode e a
     k <- kw "array"
-    pure if keyword then k <> (if mode == MP then " " else mempty) <> inner else inner
+    pure if keyword then k <> (if mode == MP && not commented then " " else mempty) <> inner else inner
 
 
 arrayBody :: Mode -> E -> Pg.A_ArrayExpr -> R D
@@ -1567,6 +1789,24 @@ filterParen f = afterCallParen f ["filter"]
 
 funcApplication :: Mode -> E -> Pg.FuncCall -> R D
 funcApplication mode e f = do
+    commented <- callCommented f
+    if commented then funcApplicationWrapped e f else funcApplicationInline mode e f
+
+
+-- | Whether a call has a comment between its parentheses.
+callCommented :: Pg.FuncCall -> R Bool
+callCommented f = do
+    any' <- anyComments
+    if not any'
+        then pure False
+        else do
+            open <- tokAt (fromIntegral (f ^. Pg.location)) >>= nextParen
+            close <- matchOf open
+            maybe (pure False) (commentsBetween open) close
+
+
+funcApplicationInline :: Mode -> E -> Pg.FuncCall -> R D
+funcApplicationInline mode e f = do
     name <- callHead f
     params <- callParams f
     body <- case params of
@@ -1937,8 +2177,9 @@ exprMaybeWrap :: E -> R D
 exprMaybeWrap e = do
     inline <- expr MR e
     force <- hasPairShapedCall e
+    commented <- hasCmts e.en
     eligible <- isWrapEligible e
-    if (len inline > inlineLengthThreshold || force) && eligible
+    if (len inline > inlineLengthThreshold || force || commented) && eligible
         then exprWrapped e
         else pure inline
 
@@ -2012,6 +2253,46 @@ argRows = \case
     (x : xs) -> (hardline <> "  " <> x) <> mconcat [hardline <> ", " <> r | r <- xs]
 
 
+-- | 'argRows', and the line break before the closing parenthesis (to go
+-- outside the rows' nesting), with the comments before each argument and
+-- before the parenthesis, if each argument's first token and the
+-- parenthesis are known.
+argRowsAt :: Maybe ([Int], Int) -> [D] -> R (D, D)
+argRowsAt Nothing ds = pure (argRows ds, hardline)
+argRowsAt (Just (firsts, close)) ds = do
+    rows <- forM (zip3 [0 :: Int ..] firsts ds) \(i, q, d) -> do
+        b <- brk "  " q
+        pure (b <> (if i == 0 then "  " else ", ") <> d)
+    end <- closeBrk close
+    pure (mconcat rows, end)
+
+
+-- | The line break before a list's closing bracket, outside the list's
+-- nesting: comments before it line up with the list's items.
+closeBrk :: Int -> R D
+closeBrk = brk (pretty (T.replicate (indentSize + 2) " "))
+
+
+-- | 'argPairRows' and the line break before the closing parenthesis, like
+-- 'argRowsAt': comments go before a key, or after its value.
+argPairRowsAt :: Maybe ([Int], Int) -> [D] -> R (D, D)
+argPairRowsAt Nothing ds = pure (argPairRows ds, hardline)
+argPairRowsAt (Just (firsts, close)) ds = do
+    -- A comment between a key and its value has nowhere to go.
+    inside <- or <$> forM (pairs firsts) \(_, v) -> not . null <$> gapBefore v
+    if inside
+        then pure (argPairRows ds, hardline)
+        else do
+            rows <- forM (zip3 [0 :: Int ..] (map fst (pairs firsts)) (pairs ds)) \(i, q, (k, v)) -> do
+                b <- brk "  " q
+                pure (b <> (if i == 0 then "  " else ", ") <> k <> ", " <> v)
+            end <- closeBrk close
+            pure (mconcat rows, end)
+  where
+    pairs (a : b : rest) = (a, b) : pairs rest
+    pairs _ = []
+
+
 argPairRows :: [D] -> D
 argPairRows = goFirst . pairs
   where
@@ -2023,26 +2304,52 @@ argPairRows = goFirst . pairs
             <> mconcat [hardline <> ", " <> k' <> ", " <> v' | (k', v') <- rest]
 
 
+-- | The first token of each of a call's arguments, and its closing
+-- parenthesis.
+callArgsAt :: Pg.FuncCall -> Int -> R (Maybe ([Int], Int))
+callArgsAt f n = do
+    any' <- anyComments
+    if not any'
+        then pure Nothing
+        else do
+            at <- tokAt (fromIntegral (f ^. Pg.location))
+            open <- nextParen at
+            mclose <- matchOf open
+            case mclose of
+                Nothing -> pure Nothing
+                Just close -> do
+                    lead <- tokL (open + 1)
+                    let open' = if lead `elem` ["distinct", "all"] then open + 1 else open
+                    firsts <- listFirsts open' close n
+                    pure ((,close) <$> firsts)
+
+
 funcApplicationWrapped :: E -> Pg.FuncCall -> R D
 funcApplicationWrapped e f = do
     name <- callHead f
     params <- callParams f
-    body <- case params of
-        NoParams -> pure mempty
-        Star -> pure (hardline <> "*")
+    (body, end) <- case params of
+        NoParams -> pure (mempty, hardline)
+        Star -> pure (hardline <> "*", hardline)
         Normal distinct args sort -> do
             prefix <- distinctPrefix distinct
             ds <- traverse (funcArgMaybeWrap e) args
             pairShaped <- looksLikeKeyValuePairs e args
-            sd <- if null sort then pure mempty else (hardline <>) <$> sortClause sort
-            pure (prefix <> (if pairShaped then argPairRows ds else argRows ds) <> sd)
+            if null sort
+                then do
+                    at <- callArgsAt f (length args)
+                    (rows, end) <- (if pairShaped then argPairRowsAt else argRowsAt) at ds
+                    pure (prefix <> rows, end)
+                else do
+                    sd <- (hardline <>) <$> sortClause sort
+                    pure (prefix <> (if pairShaped then argPairRows ds else argRows ds) <> sd, hardline)
         Variadic regular var sort -> do
             ds <- traverse (funcArgMaybeWrap e) regular
             v <- funcArgMaybeWrap e var
             k <- kw "variadic"
             sd <- if null sort then pure mempty else (hardline <>) <$> sortClause sort
-            pure (argRows (ds ++ [k <> " " <> v]) <> sd)
-    pure (name <> "(" <> nest indentSize body <> hardline <> ")")
+            pure (argRows (ds ++ [k <> " " <> v]) <> sd, hardline)
+    pure (name <> "(" <> nest indentSize body <> end <> ")")
 
 
 funcArgMaybeWrap :: E -> Pg.Node -> R D
@@ -2056,8 +2363,9 @@ funcArgMaybeWrap e n = do
         _ -> pure (mempty, n)
     arg <- child e.en argN
     force <- hasPairShapedCall arg
+    commented <- hasCmts argN
     eligible <- isWrapEligible arg
-    if (len inline > inlineLengthThreshold || force) && eligible
+    if (len inline > inlineLengthThreshold || force || commented) && eligible
         then (prefix <>) <$> exprWrapped arg
         else pure inline
 
@@ -2112,7 +2420,11 @@ arrayWrapped e a = do
                             (k <>) <$> arrayWrapped se sub
                         _ -> unsupported "a nested array pgfmt cannot read"
                     else traverse (child e.en >=> exprMaybeWrap) els
-            pure ("[" <> nest indentSize (argRows ds) <> hardline <> "]")
+            keyword <- arrayKeyword a
+            at <- tokAt (fromIntegral (a ^. Pg.location))
+            positions <- commentedList (if keyword then at + 1 else at) (length els)
+            (rows, end) <- argRowsAt positions ds
+            pure ("[" <> nest indentSize rows <> end <> "]")
 
 
 caseWrapped :: E -> Pg.CaseExpr -> R D
@@ -2177,7 +2489,8 @@ exprDoc e = do
                 else do
                     inline <- expr MR e
                     eligible <- isWrapEligible e
-                    if len inline > selectTargetInlineThreshold && eligible
+                    commented <- hasCmts e.en
+                    if (len inline > selectTargetInlineThreshold || commented) && eligible
                         then exprWrapped e
                         else pure inline
 
@@ -2190,6 +2503,38 @@ exprDoc e = do
 -- further top-level @and@ on its own line, right-aligned to the keyword.
 condAligned :: Int -> Text -> Pg.Node -> R D
 condAligned anchor keyword n = do
+    commented <- hasCmts n
+    if commented then condCommented anchor keyword n else condPlain anchor keyword n
+
+
+-- | 'condAligned' for a condition with comments in it: split on its
+-- top-level @and@s by the tree rather than the text, the comments before
+-- each @and@ at the line break before it.
+condCommented :: Int -> Text -> Pg.Node -> R D
+condCommented anchor keyword n = do
+    e <- top n
+    let kwPad = pretty (T.replicate (max 0 (anchor - T.length keyword)) " ")
+        andPad = pretty (T.replicate (max 0 (anchor - 3)) " ")
+    k <- kw keyword
+    case node n of
+        Just (Pg.Node'BoolExpr b) | e.lv == 0, b ^. Pg.boolop == Pg.AND_EXPR, first : rest <- b ^. Pg.args -> do
+            andK <- kw "and"
+            fd <- child n first >>= exprMaybeWrap
+            rds <- forM rest \x -> do
+                xd <- child n x >>= exprMaybeWrap
+                andAt <- clauseAt [["and"]] x
+                -- The comments before the @and@ (one after it has no
+                -- place).
+                b' <- (<> (andPad <> andK)) <$> brkAt andPad andAt
+                pure (b' <+> xd)
+            pure (kwPad <> k <+> fd <> mconcat rds)
+        _ -> do
+            d <- exprMaybeWrap e
+            pure (kwPad <> k <+> d)
+
+
+condPlain :: Int -> Text -> Pg.Node -> R D
+condPlain anchor keyword n = do
     e <- top n
     lower <- local (\env -> env{upper = False}) (expr MR e)
     cased <- expr MR e
@@ -2199,9 +2544,10 @@ condAligned anchor keyword n = do
     k <- kw keyword
     andK <- kw "and"
     eligible <- isWrapEligible e
+    commented <- hasCmts n
     case parts of
         [single]
-            | T.length single > inlineLengthThreshold && eligible -> do
+            | (T.length single > inlineLengthThreshold || commented) && eligible -> do
                 d <- exprMaybeWrap e
                 pure (kwPad <> k <+> d)
             | otherwise -> pure (kwPad <> k <+> raw single)
@@ -2364,7 +2710,25 @@ selNoParens s = do
     so <- if null (s ^. Pg.sortClause) then pure Nothing else Just <$> sortClause (s ^. Pg.sortClause)
     l <- selectLimit True s
     lk <- locking s
-    pure (vsep (catMaybes [w, Just c, so, l, lk]))
+    cAt <- attempt (selectFirst (s & Pg.maybe'withClause .~ Nothing))
+    soAt <- maybe (pure Nothing) (clauseAt [["order", "by"]]) (listToMaybe (s ^. Pg.sortClause))
+    lAt <- limitAt s
+    linesAt mempty (present [(Nothing, w), (cAt, Just c), (soAt, so), (lAt, l), (Nothing, lk)])
+
+
+-- | The clauses there are, with their first tokens.
+present :: [(Maybe Int, Maybe D)] -> [(Maybe Int, D)]
+present xs = [(q, d) | (q, Just d) <- xs]
+
+
+-- | Where a select's @limit@ or @offset@, whichever comes first, starts.
+limitAt :: Pg.SelectStmt -> R (Maybe Int)
+limitAt s = do
+    l <- maybe (pure Nothing) (clauseAt [["limit"]]) (s ^. Pg.maybe'limitCount)
+    o <- maybe (pure Nothing) (clauseAt [["offset"]]) (s ^. Pg.maybe'limitOffset)
+    pure case catMaybes [l, o] of
+        [] -> Nothing
+        qs -> Just (minimum qs)
 
 
 -- | A set operation's operands, with their parentheses.
@@ -2379,8 +2743,8 @@ operands s = do
     pure (l, lp, r, rp)
 
 
--- | @union all@ and the like, as written.
-setOperator :: Pg.SelectStmt -> Pg.SelectStmt -> Int -> R D
+-- | @union all@ and the like, as written, and where.
+setOperator :: Pg.SelectStmt -> Pg.SelectStmt -> Int -> R (D, Int)
 setOperator s r rp = do
     rFirst <- selectFirst r
     let k = rFirst - rp - 1
@@ -2393,7 +2757,8 @@ setOperator s r rp = do
             Pg.SETOP_INTERSECT -> "intersect"
             _ -> "except"
     unless (op == expected && (s ^. Pg.all) == (modifier == Just "all")) (unsupported "a set operator pgfmt cannot find")
-    kw (T.unwords (op : toList modifier))
+    d <- kw (T.unwords (op : toList modifier))
+    pure (d, opTok)
 
 
 -- | "PgFmt.Render"'s @renderSelectClause@ / @renderSimpleSelect@.
@@ -2402,9 +2767,10 @@ selClause s
     | s ^. Pg.op /= Pg.SETOP_NONE = do
         (l, lp, r, rp) <- operands s
         ld <- if lp == 0 then selClause l else selWithParens l lp
-        op <- setOperator s r rp
+        (op, opAt) <- setOperator s r rp
         rd <- if rp == 0 then selClause r else selWithParens r rp
-        pure (vsep [ld, op, rd])
+        rAt <- attempt (subtract rp <$> selectFirst r)
+        linesAt mempty [(Nothing, ld), (Just opAt, op), (rAt, rd)]
     | not (null (s ^. Pg.valuesLists)) = valuesClause s
     | otherwise = do
         when (isJust (s ^. Pg.maybe'intoClause)) (unsupported "select into")
@@ -2414,7 +2780,12 @@ selClause s
         g <- groupClause s
         h <- traverse (condAligned 6 "having") (s ^. Pg.maybe'havingClause)
         wi <- windowClause s
-        pure (vsep (catMaybes [Just t, f, w, g, h, wi]))
+        fAt <- maybe (pure Nothing) (clauseAt [["from"], ["from", "lateral"]]) (listToMaybe (s ^. Pg.fromClause))
+        wAt <- maybe (pure Nothing) (clauseAt [["where"]]) (s ^. Pg.maybe'whereClause)
+        gAt <- maybe (pure Nothing) (clauseAt [["group", "by"]]) (listToMaybe (s ^. Pg.groupClause))
+        hAt <- maybe (pure Nothing) (clauseAt [["having"]]) (s ^. Pg.maybe'havingClause)
+        wiAt <- maybe (pure Nothing) (clauseAt [["window"]]) (listToMaybe (s ^. Pg.windowClause))
+        linesAt mempty (present [(Nothing, Just t), (fAt, f), (wAt, w), (gAt, g), (hAt, h), (wiAt, wi)])
 
 
 -- | @select@, @select all@, @select distinct@, @select distinct on (...)@.
@@ -2451,8 +2822,17 @@ targeting s = do
         [] -> pure prefix
         [single] -> do
             forces <- targetForcesMultiLine single
-            if forces then blockList prefix targetElDoc [single] else (prefix <+>) <$> targetElDoc single
-        items -> blockList prefix targetElDoc items
+            q <- targetFirst single
+            commented <- maybe (pure False) (fmap (not . null) . gapBefore) q
+            if forces || commented then blockList prefix targetElDoc targetFirst [single] else (prefix <+>) <$> targetElDoc single
+        items -> blockList prefix targetElDoc targetFirst items
+
+
+-- | A target's first token.
+targetFirst :: Pg.Node -> R (Maybe Int)
+targetFirst n = case node n of
+    Just (Pg.Node'ResTarget rt) | rt ^. Pg.location >= 0 -> Just <$> tokAt (fromIntegral (rt ^. Pg.location))
+    _ -> pure Nothing
 
 
 targetForcesMultiLine :: Pg.Node -> R Bool
@@ -2461,14 +2841,17 @@ targetForcesMultiLine n = case node n of
     _ -> pure False
 
 
--- | "PgFmt.Render"'s @renderBlockListWith@.
-blockList :: D -> (a -> R D) -> [a] -> R D
-blockList prefix item items = do
+-- | "PgFmt.Render"'s @renderBlockListWith@; with each item's first token,
+-- for the comments before it.
+blockList :: D -> (a -> R D) -> (a -> R (Maybe Int)) -> [a] -> R D
+blockList prefix item first items = do
     rows <- zipWithM row [(0 :: Int) ..] items
-    pure (prefix <> hardline <> vsep rows)
+    pure (prefix <> mconcat rows)
   where
-    row 0 x = ("    " <>) <$> item x
-    row _ x = ("  , " <>) <$> item x
+    row i x = do
+        b <- first x >>= brkAt "    "
+        d <- item x
+        pure (b <> (if i == 0 then "    " else "  , ") <> d)
 
 
 -- | A target: its expression and alias.
@@ -2586,7 +2969,7 @@ selClauseInline s
     | s ^. Pg.op /= Pg.SETOP_NONE = do
         (l, lp, r, rp) <- operands s
         ld <- if lp == 0 then selClauseInline l else selInline (Sel l lp)
-        op <- setOperator s r rp
+        (op, _) <- setOperator s r rp
         rd <- if rp == 0 then selClauseInline r else selInline (Sel r rp)
         pure (ld <+> op <+> rd)
     | not (null (s ^. Pg.valuesLists)) = valuesP s
@@ -2637,7 +3020,7 @@ selClauseP s
     | s ^. Pg.op /= Pg.SETOP_NONE = do
         (l, lp, r, rp) <- operands s
         ld <- if lp == 0 then selClauseP l else selP (Sel l lp)
-        op <- setOperator s r rp
+        (op, _) <- setOperator s r rp
         rd <- if rp == 0 then selClauseP r else selP (Sel r rp)
         pure (ld <+> op <+> rd)
     | not (null (s ^. Pg.valuesLists)) = valuesP s
@@ -2690,8 +3073,21 @@ groupClause s
     | otherwise = do
         k <- kw "group by"
         ds <- traverse groupItem (s ^. Pg.groupClause)
-        pure (Just (k <+> commaJoin ds))
+        positions <- commentedGroup
+        case positions of
+            -- With comments, one item per line, as a select's targets.
+            Just firsts -> Just <$> blockList k (pure . fst) (pure . Just . snd) (zip ds firsts)
+            Nothing -> pure (Just (k <+> commaJoin ds))
   where
+    items = s ^. Pg.groupClause
+    commentedGroup = do
+        start <- maybe (pure Nothing) (clauseAt [["group", "by"]]) (listToMaybe items)
+        end <- maybe (pure Nothing) spanOf (listToMaybe (reverse items))
+        case (start, end) of
+            (Just g, Just (_, e)) -> do
+                commented <- commentsBetween (g + 1) e
+                if commented then listFirsts (g + 1) (e + 1) (length items) else pure Nothing
+            _ -> pure Nothing
     groupItem n = case node n of
         Just (Pg.Node'GroupingSet g) -> do
             at <- tokAt (fromIntegral (g ^. Pg.location))
@@ -2831,39 +3227,50 @@ locking s
         pure (Just (spaceJoin ds))
 
 
--- | The token of @values@, and each row's items with its parentheses
--- placed.
+-- | Each row's items, with its parentheses placed.
 valuesRows :: Pg.SelectStmt -> R [[Pg.Node]]
-valuesRows s = do
+valuesRows s = map snd <$> valuesRowsAt s
+
+
+-- | Each row's opening parenthesis and items, its parentheses placed.
+valuesRowsAt :: Pg.SelectStmt -> R [(Int, [Pg.Node])]
+valuesRowsAt s = do
     when (isJust (s ^. Pg.maybe'withClause)) (unsupported "values with a with clause")
     rows <- forM (s ^. Pg.valuesLists) \r -> case node r of
         Just (Pg.Node'List l) -> pure (l ^. Pg.items)
         _ -> unsupported "a values row pgfmt cannot read"
     first <- selectFirst s
-    let place _ [] = pure ()
-        place i (_ : rest) = do
+    let place _ [] = pure []
+        place i (row : rest) = do
             close <- expectParen i
             unless (null rest) do
                 comma <- tokIs (close + 1) ","
                 unless comma (unsupported "values rows pgfmt cannot read")
-            place (close + 2) rest
+            ((i, row) :) <$> place (close + 2) rest
     place (first + 1) rows
-    pure rows
 
 
 -- | "PgFmt.Render"'s @renderValuesClause@.
 valuesClause :: Pg.SelectStmt -> R D
 valuesClause s = do
-    rows <- valuesRows s
+    rows <- valuesRowsAt s
     k <- kw "values"
     let lastIdx = length rows - 1
-    docs <- forM (zip [(0 :: Int) ..] rows) \(i, items) -> do
+    docs <- forM (zip [(0 :: Int) ..] rows) \(i, (open, items)) -> do
         ds <- traverse (top >=> expr MR) items
-        let bracketed = case ds of
-                [_] -> "(" <> commaJoin ds <> ")"
-                _ -> bracketList ds
-        pure (if i < lastIdx then bracketed <> "," else bracketed)
-    pure (k <> hardline <> indent indentSize (vsep docs))
+        close <- matchOf open >>= req "a values row"
+        commented <- commentsBetween open close
+        bracketed <-
+            if commented
+                then do
+                    firsts <- listFirsts open close (length ds)
+                    bracketListAt ((,close) <$> firsts) ds
+                else pure case ds of
+                    [_] -> "(" <> commaJoin ds <> ")"
+                    _ -> bracketList ds
+        b <- brk mempty open
+        pure (b <> if i < lastIdx then bracketed <> "," else bracketed)
+    pure (k <> nest indentSize (mconcat docs))
 
 
 valuesP :: Pg.SelectStmt -> R D
@@ -2882,6 +3289,25 @@ bracketList = \case
     (x : xs) -> vsep (("( " <> x) : map (", " <>) xs ++ [")"])
 
 
+-- | 'bracketList', with the comments before each item and before the
+-- closing parenthesis, if each item's first token and the parenthesis are
+-- known.
+bracketListAt :: Maybe ([Int], Int) -> [D] -> R D
+bracketListAt Nothing ds = pure (bracketList ds)
+bracketListAt (Just (firsts, close)) ds = case zip firsts ds of
+    [] -> pure "()"
+    (q0, x) : rest -> do
+        -- After the opening parenthesis, a comment goes before the first
+        -- item, on its own line.
+        cs <- gapBefore q0
+        let before = mconcat [raw c.ctext <> hardline | c <- cs]
+        items <- forM rest \(q, d) -> do
+            b <- brk "  " q
+            pure (b <> ", " <> d)
+        end <- brk "  " close
+        pure (before <> "( " <> x <> mconcat items <> end <> ")")
+
+
 withClause :: Pg.WithClause -> R D
 withClause w = do
     k <- kw (if w ^. Pg.recursive then "with recursive" else "with")
@@ -2889,8 +3315,11 @@ withClause w = do
         lastIdx = length ctes - 1
     docs <- forM (zip [0 :: Int ..] ctes) \(i, c) -> do
         d <- cte (i == lastIdx) c
-        pure (if i == 0 then k <> " " <> d else d)
-    pure (vsep docs)
+        at <- case node c of
+            Just (Pg.Node'CommonTableExpr x) | x ^. Pg.location >= 0 -> Just <$> tokAt (fromIntegral (x ^. Pg.location))
+            _ -> pure Nothing
+        pure (at, if i == 0 then k <> " " <> d else d)
+    linesAt mempty docs
 
 
 -- | A common table expression's header (@name (cols) as materialized@) and
@@ -3479,6 +3908,20 @@ preparable n = case node n of
     _ -> unsupported (nodeName n)
 
 
+-- | Where a @returning@ clause starts.
+returningAt :: Maybe Pg.ReturningClause -> R (Maybe Int)
+returningAt = \case
+    Just rc | t : _ <- rc ^. Pg.exprs -> do
+        q <- targetFirst t
+        maybe (pure Nothing) (wordsBefore ["returning"]) q
+    _ -> pure Nothing
+
+
+-- | A range variable as a node, for its locations.
+toNode :: Pg.RangeVar -> Pg.Node
+toNode rv = defMessage & Pg.rangeVar .~ rv
+
+
 returning :: Maybe Pg.ReturningClause -> R (Maybe D)
 returning Nothing = pure Nothing
 returning (Just rc) = do
@@ -3516,12 +3959,26 @@ insertStmt s = do
                 _ -> unsupported "an insert of something other than a select"
             k <- selectParens 0 st
             selD <- selStmt st k
-            pure case cols of
-                Nothing -> override <> selD
-                Just c -> c <> hardline <> override <> selD
+            selAt <- attempt (subtract k <$> selectFirst st)
+            case cols of
+                Nothing -> pure (override <> selD)
+                Just c -> do
+                    b <- brkAt mempty selAt
+                    pure (c <> b <> override <> selD)
     conflict <- traverse onConflict (s ^. Pg.maybe'onConflictClause)
     ret <- returning (s ^. Pg.maybe'returningClause)
-    pure (vsep (catMaybes [w, Just (ins <+> target), Just rest, conflict, ret]))
+    insAt <- clauseAt [["insert", "into"]] (toNode rv)
+    restAt <- case s ^. Pg.maybe'selectStmt of
+        Nothing -> pure Nothing
+        Just q -> case (s ^. Pg.cols, node q) of
+            (c : _, _) -> fmap (subtract 1) <$> targetFirst c
+            (_, Just (Pg.Node'SelectStmt st)) -> attempt (selectParensPeek st >>= \k -> subtract k <$> selectFirst st)
+            _ -> pure Nothing
+    conflictAt <- case s ^. Pg.maybe'onConflictClause of
+        Just oc | oc ^. Pg.location >= 0 -> Just <$> tokAt (fromIntegral (oc ^. Pg.location))
+        _ -> pure Nothing
+    retAt <- returningAt (s ^. Pg.maybe'returningClause)
+    linesAt mempty (present [(Nothing, w), (insAt, Just (ins <+> target)), (restAt, Just rest), (conflictAt, conflict), (retAt, ret)])
   where
     overriding who = do
         k <- kw ("overriding " <> who <> " value")
@@ -3538,10 +3995,17 @@ insertColumns cols = do
         n : _ | Just (Pg.Node'ResTarget rt) <- node n -> tokAt (fromIntegral (rt ^. Pg.location))
         _ -> unsupported "an insert column list"
     _ <- expectParen (first - 1)
-    pure
-        if length ds <= 3
-            then indent indentSize ("(" <> commaJoin ds <> ")")
-            else indent indentSize (bracketList ds)
+    close <- matchOf (first - 1) >>= req "an insert column list"
+    commented <- commentsBetween (first - 1) close
+    if commented
+        then do
+            firsts <- listFirsts (first - 1) close (length ds)
+            indent indentSize <$> bracketListAt ((,close) <$> firsts) ds
+        else
+            pure
+                if length ds <= 3
+                    then indent indentSize ("(" <> commaJoin ds <> ")")
+                    else indent indentSize (bracketList ds)
 
 
 -- | A column being set: its name and indirection.
@@ -3576,6 +4040,18 @@ setItems (n : rest) = case node n of
             (SetOne rt v :) <$> setItems rest
         Nothing -> unsupported "an assignment without a value"
     _ -> unsupported "an assignment pgfmt cannot read"
+
+
+-- | An assignment's first token.
+setFirst :: SetItem -> R (Maybe Int)
+setFirst = \case
+    SetOne rt _ -> at rt 0
+    SetMany (rt : _) _ -> at rt 1
+    SetMany [] _ -> pure Nothing
+  where
+    at rt back
+        | rt ^. Pg.location >= 0 = Just . subtract back <$> tokAt (fromIntegral (rt ^. Pg.location))
+        | otherwise = pure Nothing
 
 
 -- | "PgFmt.Render"'s @renderSetClause@.
@@ -3645,13 +4121,23 @@ updateStmt s = do
     up <- kw "update"
     items <- setItems (s ^. Pg.targetList)
     setK <- kw "set"
+    commented <- case items of
+        [single] -> setFirst single >>= maybe (pure False) (fmap (not . null) . gapBefore)
+        _ -> pure False
     sets <- case items of
-        [single] -> (setK <+>) <$> setClause single
-        _ -> blockList setK setClause items
+        [single] | not commented -> (setK <+>) <$> setClause single
+        _ -> blockList setK setClause setFirst items
     from <- if null (s ^. Pg.fromClause) then pure Nothing else Just <$> fromClause (s ^. Pg.fromClause)
     wh <- traverse whereOrCurrent (s ^. Pg.maybe'whereClause)
     ret <- returning (s ^. Pg.maybe'returningClause)
-    pure (vsep (catMaybes [w, Just (up <+> rel), Just sets, from, wh, ret]))
+    upAt <- clauseAt [["update"]] (toNode rv)
+    setAt <- case items of
+        i : _ -> setFirst i >>= maybe (pure Nothing) (wordsBefore ["set"])
+        [] -> pure Nothing
+    fromAt <- maybe (pure Nothing) (clauseAt [["from"], ["from", "lateral"]]) (listToMaybe (s ^. Pg.fromClause))
+    whAt <- maybe (pure Nothing) (clauseAt [["where"], ["where", "current", "of"]]) (s ^. Pg.maybe'whereClause)
+    retAt <- returningAt (s ^. Pg.maybe'returningClause)
+    linesAt mempty (present [(Nothing, w), (upAt, Just (up <+> rel)), (setAt, Just sets), (fromAt, from), (whAt, wh), (retAt, ret)])
 
 
 deleteStmt :: Pg.DeleteStmt -> R D
@@ -3669,7 +4155,11 @@ deleteStmt s = do
                 pure (Just (k <+> commaJoin ds))
     wh <- traverse whereOrCurrent (s ^. Pg.maybe'whereClause)
     ret <- returning (s ^. Pg.maybe'returningClause)
-    pure (vsep (catMaybes [w, Just (del <+> rel), using, wh, ret]))
+    delAt <- clauseAt [["delete", "from"]] (toNode rv)
+    usingAt <- maybe (pure Nothing) (clauseAt [["using"]]) (listToMaybe (s ^. Pg.usingClause))
+    whAt <- maybe (pure Nothing) (clauseAt [["where"], ["where", "current", "of"]]) (s ^. Pg.maybe'whereClause)
+    retAt <- returningAt (s ^. Pg.maybe'returningClause)
+    linesAt mempty (present [(Nothing, w), (delAt, Just (del <+> rel)), (usingAt, using), (whAt, wh), (retAt, ret)])
 
 
 whereOrCurrent :: Pg.Node -> R D

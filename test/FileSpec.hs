@@ -48,11 +48,25 @@ cases =
         , expected = Unchanged "pgfmt does not lay it out: not DML"
         }
     , Case
-        { name = "syntax: a comment inside a statement leaves it alone"
+        { name = "syntax: a comment inside a statement stays at its place"
         , backend = Syntax
         , keywordCase = Lower
         , input = "SELECT a -- the a\nFROM t;\n"
-        , expected = Unchanged "comments inside the statement"
+        , expected = Output "select a -- the a\nfrom t;\n"
+        }
+    , Case
+        { name = "syntax: a comment with no line break at its place leaves the statement alone"
+        , backend = Syntax
+        , keywordCase = Lower
+        , input = "SELECT a + -- inside\n b FROM t;\n"
+        , expected = Unchanged "pgfmt does not lay it out: a comment pgfmt cannot place"
+        }
+    , Case
+        { name = "syntax: an indented statement's comment lines are indented with it"
+        , backend = Syntax
+        , keywordCase = Lower
+        , input = "begin;\n    select a, -- x\n      -- y\n      b from t;\ncommit;\n"
+        , expected = Output "begin;\n    select\n        a -- x\n        -- y\n      , b\n    from t;\ncommit;\n"
         }
     , Case
         { name = "libpg-query: DDL is pretty-printed"

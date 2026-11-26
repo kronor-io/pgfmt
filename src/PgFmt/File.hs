@@ -34,10 +34,11 @@ import PgQuery qualified as Pg
 
 -- | What lays out a statement.
 data Backend
-    = -- | pgfmt's own layout. DML only; statements it does not lay out, or
-      -- that have comments inside them, are left as they are. Plain SQL is
-      -- laid out from libpg_query's parse tree ("PgFmt.Layout"), the
-      -- hasql-th dialect from postgresql-syntax's ("PgFmt.Render").
+    = -- | pgfmt's own layout. DML only; statements it does not lay out
+      -- are left as they are. Plain SQL is laid out from libpg_query's parse
+      -- tree ("PgFmt.Layout"), comments and all; the hasql-th dialect from
+      -- postgresql-syntax's ("PgFmt.Render"), which leaves statements with
+      -- comments inside them as they are.
       Syntax
     | -- | libpg_query's pretty-printer. Any statement PostgreSQL parses,
       -- comments included.
@@ -288,16 +289,16 @@ runBackend opts body interiorComments = case opts.backend of
             Left (Kept _) -> libpgQuery body
             Left other -> pure (Left other)
   where
-    syntax sql
-        -- Neither renderer places comments.
-        | interiorComments = pure (Left (Kept "comments inside the statement"))
-        | otherwise = case opts.dialect of
-            PlainSql -> do
-                laid <- Layout.formatStatement (opts.keywordCase == Upper) sql
-                pure case laid of
-                    Right formatted -> Right (Syntax, True, formatted)
-                    Left reason -> Left (Kept ("pgfmt does not lay it out: " <> reason))
-            HasqlTh -> pure case Render.formatStatement opts.dialect (decode sql) of
+    syntax sql = case opts.dialect of
+        PlainSql -> do
+            laid <- Layout.formatStatement (opts.keywordCase == Upper) sql
+            pure case laid of
+                Right formatted -> Right (Syntax, True, formatted)
+                Left reason -> Left (Kept ("pgfmt does not lay it out: " <> reason))
+        HasqlTh
+            -- postgresql-syntax's tree has no comments to place.
+            | interiorComments -> pure (Left (Kept "comments inside the statement"))
+            | otherwise -> pure case Render.formatStatement opts.dialect (decode sql) of
                 Right formatted -> Right (Syntax, False, formatted)
                 Left (Unsupported _) -> Left (Kept "postgresql-syntax does not parse it")
                 Left (RendererBug reason) -> Left (Failed reason)

@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+* The `syntax` backend lays out plain SQL statements with comments inside
+  them, instead of leaving them as they are (or, with `--backend auto`, to
+  `libpg-query`). Each comment goes where the layout breaks a line at its
+  place in the source: one sharing a line with code ends the line before the
+  break, one on a line of its own stays on one. A list with a comment in it
+  (select targets, `set` assignments, call arguments, `in (...)`, `array[...]`,
+  `values` rows and their items, insert columns, `group by`, `and`ed
+  conditions) puts one item per line. A comment with no break at its place
+  (inside an expression, or between the parts of a string continued over
+  lines) still leaves the statement as it is. On Kronor's migrations, 177 of
+  the 179 DML statements with comments inside are now laid out, along with
+  statements with comments in PL/pgSQL bodies; statements without comments
+  come out byte for byte the same. The hasql-th dialect still leaves
+  statements with comments alone.
+
 ## 0.1.1.0
 
 * The `syntax` backend lays out plain SQL from libpg_query's parse tree
