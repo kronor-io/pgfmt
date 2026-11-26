@@ -67,72 +67,92 @@ data QuasiQuote = QuasiQuote
 -- Template Haskell brackets, whose contents are Haskell. A @[name|@ with no
 -- @|]@ after it is taken for a list comprehension.
 quasiQuotes :: Text -> [QuasiQuote]
-quasiQuotes source = code 0 1 0 Nothing (T.unpack source)
+quasiQuotes source = code Cursor{offset = 0, line = 1, column = 0} Nothing (T.unpack source)
   where
-    -- offset, line, column, the character before, the rest.
-    code :: Int -> Int -> Int -> Maybe Char -> String -> [QuasiQuote]
-    code _ _ _ _ [] = []
-    code i l c prev s@(x : rest)
-        | x == '{', '-' : _ <- rest = blockComment (i + 2) l (c + 2) (1 :: Int) (drop 1 rest)
-        | x == '-', lineComment prev s = skipLine i l c s
-        | x == '"' = string (i + 1) l (c + 1) rest
+    -- Where the scan is, the character before, and the rest.
+    code :: Cursor -> Maybe Char -> String -> [QuasiQuote]
+    code _ _ [] = []
+    code at prev s@(x : rest)
+        | x == '{', '-' : _ <- rest = blockComment (forward 2 at) (1 :: Int) (drop 1 rest)
+        | x == '-', lineComment prev s = skipLine at s
+        | x == '"' = string (forward 1 at) rest
         | x == '\'' = charLiteral
         | x == '[', Just (name, afterBar) <- opening rest =
-            let open = i + 1 + T.length name + 1
+            let open = at.offset + 1 + T.length name + 1
              in case closing open afterBar of
                     Just (end, afterClose)
                         | name `notElem` ["e", "d", "t", "p"] ->
                             let body = take (end - open) afterBar
-                                (l', c') = advance (l, c) ('[' : T.unpack name <> "|" <> body <> "|]")
-                             in QuasiQuote{quoter = name, bodyStart = open, bodyEnd = end, line = l, column = c}
-                                    : code (end + 2) l' c' (Just ']') afterClose
+                             in QuasiQuote{quoter = name, bodyStart = open, bodyEnd = end, line = at.line, column = at.column}
+                                    : code (past ('[' : T.unpack name <> "|" <> body <> "|]") at) (Just ']') afterClose
                     _ -> step
         | otherwise = step
       where
-        step = let (l', c') = advance (l, c) [x] in code (i + 1) l' c' (Just x) rest
+        step = code (past [x] at) (Just x) rest
         -- A prime after an identifier character is part of the name (x', f'');
         -- ''T quotes a type name; otherwise a character literal is 'x' or an
         -- escape, '\n', and anything else is a quoted name, 'f.
         charLiteral
             | Just p <- prev, isIdentChar p = step
-            | '\'' : more <- rest = code (i + 2) l (c + 2) (Just '\'') more
+            | '\'' : more <- rest = code (forward 2 at) (Just '\'') more
             -- The character after the backslash is part of the escape even
             -- when it is a quote, '\''.
             | '\\' : _ : more <- rest =
                 let (escape, after) = break (== '\'') more
-                    n = 3 + length escape + 1
-                 in code (i + n) l (c + n) (Just '\'') (drop 1 after)
-            | _ : '\'' : more <- rest = code (i + 3) l (c + 3) (Just '\'') more
+                 in code (forward (3 + length escape + 1) at) (Just '\'') (drop 1 after)
+            | _ : '\'' : more <- rest = code (forward 3 at) (Just '\'') more
             | otherwise = step
 
-    skipLine i l _ s =
+    skipLine at s =
         let (comment, after) = break (== '\n') s
          in case after of
                 [] -> []
-                _ : more -> code (i + length comment + 1) (l + 1) 0 (Just '\n') more
+                _ : more -> code (past (comment <> "\n") at) (Just '\n') more
 
-    blockComment i l c depth s = case s of
+    blockComment at depth s = case s of
         [] -> []
         '-' : '}' : more
-            | depth == 1 -> code (i + 2) l (c + 2) (Just '}') more
-            | otherwise -> blockComment (i + 2) l (c + 2) (depth - 1) more
-        '{' : '-' : more -> blockComment (i + 2) l (c + 2) (depth + 1) more
-        x : more -> let (l', c') = advance (l, c) [x] in blockComment (i + 1) l' c' depth more
+            | depth == 1 -> code (forward 2 at) (Just '}') more
+            | otherwise -> blockComment (forward 2 at) (depth - 1) more
+        '{' : '-' : more -> blockComment (forward 2 at) (depth + 1) more
+        x : more -> blockComment (past [x] at) depth more
 
-    string i l c s = case s of
+    string at s = case s of
         [] -> []
-        '"' : more -> code (i + 1) l (c + 1) (Just '"') more
+        '"' : more -> code (forward 1 at) (Just '"') more
         -- A string gap, \  \, spans whitespace (newlines too) between two
         -- backslashes.
         '\\' : w : more
             | isSpace w ->
                 let (gap, after) = break (== '\\') (w : more)
-                    (l', c') = advance (l, c + 1) gap
-                 in string (i + 1 + length gap + 1) l' (c' + 1) (drop 1 after)
-        '\\' : e : more -> let (l', c') = advance (l, c + 1) [e] in string (i + 2) l' c' more
+                 in string (past ('\\' : gap <> "\\") at) (drop 1 after)
+        '\\' : e : more -> string (past ['\\', e] at) more
         -- An unterminated string ends at the line; GHC would reject the file.
-        '\n' : more -> code (i + 1) (l + 1) 0 (Just '\n') more
-        x : more -> let (l', c') = advance (l, c) [x] in string (i + 1) l' c' more
+        '\n' : more -> code (past "\n" at) (Just '\n') more
+        x : more -> string (past [x] at) more
+
+
+-- | Where a scan is: an offset in characters, a 1-based line and a 0-based
+-- column.
+data Cursor = Cursor
+    { offset :: Int
+    , line :: Int
+    , column :: Int
+    }
+
+
+-- | The cursor after these characters.
+past :: String -> Cursor -> Cursor
+past s at = foldl step at s
+  where
+    step c x
+        | x == '\n' = c{offset = c.offset + 1, line = c.line + 1, column = 0}
+        | otherwise = c{offset = c.offset + 1, column = c.column + 1}
+
+
+-- | The cursor after this many characters, none of them a line break.
+forward :: Int -> Cursor -> Cursor
+forward n at = at{offset = at.offset + n, column = at.column + n}
 
 
 -- | Whether a @-@ at this point starts a line comment: two or more dashes
@@ -183,11 +203,6 @@ closing i = \case
     [] -> Nothing
     '|' : ']' : more -> Just (i, more)
     _ : more -> closing (i + 1) more
-
-
--- | Line and column after these characters.
-advance :: (Int, Int) -> String -> (Int, Int)
-advance = foldl \(l, c) x -> if x == '\n' then (l + 1, 0) else (l, c + 1)
 
 
 -- | The unqualified name of a quoter.
