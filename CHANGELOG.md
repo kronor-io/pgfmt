@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+* The `syntax` backend lays out `create function` and `create procedure`:
+  the arguments on the first line, or one per line with the comma at the end
+  if they do not fit or have comments; each clause before the body on a line
+  of its own, `as` ending the last; the body from the start of the next line,
+  as written (or as the PL/pgSQL pass formats it); the clauses after the body
+  on its last line. Clauses keep their source order and words (`default`
+  rather than `libpg-query`'s `=`). A SQL-standard body (`begin atomic ...
+  end`, `return ...`) has its statements laid out. On Kronor's migrations this
+  lays out 2,184 more statements, changing 1,588 files; none fails the
+  parse-tree check, and formatting again changes nothing.
+
 * The `syntax` backend lays out `create index` and `alter table` too, in the
   style they are usually written: an index's `on` and `where` on lines of
   their own (`using` only if written, which `libpg-query` adds), an `alter

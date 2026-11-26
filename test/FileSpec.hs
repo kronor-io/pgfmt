@@ -150,7 +150,7 @@ cases =
         , backend = Auto
         , keywordCase = Lower
         , input = "create function f(p int) returns void language plpgsql as $$\ndeclare\n    v int;\nbegin\n    select a into v from t where id = p;\n    update t set a = 1, b = 2 where id = p;\n    if v > 1 then\n        delete from t where id = p;\n    end if;\nend;\n$$;\n"
-        , expected = Output "create function f(p int) returns void language plpgsql as $$\ndeclare\n    v int;\nbegin\n    select a into v from t where id = p;\n    update t\n    set\n        a = 1\n      , b = 2\n    where id = p;\n    if v > 1 then\n        delete from t\n        where id = p;\n    end if;\nend;\n$$;\n"
+        , expected = Output "create function f(p int)\n    returns void\n    language plpgsql as\n$$\ndeclare\n    v int;\nbegin\n    select a into v from t where id = p;\n    update t\n    set\n        a = 1\n      , b = 2\n    where id = p;\n    if v > 1 then\n        delete from t\n        where id = p;\n    end if;\nend;\n$$;\n"
         }
     , Case
         { name = "PL/pgSQL: a dollar-quoted argument default is not taken for the body"
@@ -164,7 +164,7 @@ cases =
         , backend = Auto
         , keywordCase = Lower
         , input = "create function f(p text default $$begin update t set a=1; return p; end$$)\nreturns text language plpgsql\nas $$begin update t set a=1; return p; end$$;\n"
-        , expected = Contains ["as $$begin update t set a=1; return p; end$$"]
+        , expected = Contains ["as\n$$begin update t set a=1; return p; end$$"]
         }
     , Case
         { name = "standard_conforming_strings off leaves the file alone"

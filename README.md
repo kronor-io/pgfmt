@@ -216,7 +216,8 @@ Two backends lay statements out, and they have different styles:
 
 - `syntax`: pgfmt's own renderer. It handles `select`, `insert`, `update`,
   `delete` and `values`, with commas at the start of lines, and `create
-  table`, `create view`, `create index` and `alter table` (see below). It lays
+  table`, `create view`, `create index`, `alter table` (see below) and
+  `create function` (see [PL/pgSQL](#plpgsql)). It lays
   statements out from PostgreSQL's own parse tree (libpg_query's), keeping
   what the tree forgets from the source: redundant parentheses, `!=`, `as`
   before an alias, `inner join`, how a type is spelled, and comments. A
@@ -333,7 +334,10 @@ $$;
 ```
 
 ```sql
-create function expire_pending_orders(cutoff interval) returns int language plpgsql as $$
+create function expire_pending_orders(cutoff interval)
+    returns integer
+    language plpgsql as
+$$
 declare
     expired integer;
 begin
@@ -348,6 +352,12 @@ begin
 end;
 $$;
 ```
+
+The function's head is laid out too: its arguments on the first line, or
+one per line if they do not fit, each clause before the body on a line of
+its own with `as` ending the last, and the body from the start of the next
+line. The clauses after the body stay on its last line. A SQL-standard body
+(`begin atomic ... end`) has its statements laid out like any others.
 
 The statements it formats are `insert`, `update`, `delete` and `select` run
 for their effect, and `return query`. Everything else is left as written: the
