@@ -1137,19 +1137,28 @@ arrayEligible e a = anyM el (a ^. Pg.elements)
         _ -> child e.en n >>= isWrapEligible
 
 
--- | A call (maybe under @::@ casts) and how to put the casts back.
-topLevelFuncApp :: E -> R (Maybe (Pg.FuncCall, E, D -> R D))
+-- | A call under any number of @::@ casts.
+data CastedCall = CastedCall
+    { call :: Pg.FuncCall
+    , callExpr :: E
+    , recast :: D -> R D
+    -- ^ Put the casts back after the call's layout.
+    }
+
+
+-- | The call an expression is, maybe under @::@ casts.
+topLevelFuncApp :: E -> R (Maybe CastedCall)
 topLevelFuncApp e = do
     cast <- asColonCast e
     case cast of
         Just (inner, tn) -> do
             found <- topLevelFuncApp inner
             pure case found of
-                Just (f, fe, attach) -> Just (f, fe, \d -> do d' <- attach d; t <- typeName tn; pure (d' <> "::" <> t))
+                Just c -> Just c{recast = \d -> do d' <- c.recast d; t <- typeName tn; pure (d' <> "::" <> t)}
                 Nothing -> Nothing
         Nothing -> do
             app <- asFuncApp e
-            pure ((\f -> (f, e, pure)) <$> app)
+            pure ((\f -> CastedCall{call = f, callExpr = e, recast = pure}) <$> app)
 
 
 funcAppArgCount :: Pg.FuncCall -> Int
@@ -1184,7 +1193,7 @@ hasPairShapedCall :: E -> R Bool
 hasPairShapedCall e = do
     found <- topLevelFuncApp e
     case found of
-        Just (f, fe, _) -> do
+        Just CastedCall{call = f, callExpr = fe} -> do
             params <- callParams f
             case params of
                 Normal _ args _ -> looksLikeKeyValuePairs fe args
@@ -1506,8 +1515,8 @@ exprDoc :: E -> R D
 exprDoc e = do
     found <- topLevelFuncApp e
     case found of
-        Just (f, fe, attach)
-            | funcAppArgCount f >= funcWrapThreshold -> funcApplicationWrapped fe f >>= attach
+        Just CastedCall{call = f, callExpr = fe, recast}
+            | funcAppArgCount f >= funcWrapThreshold -> funcApplicationWrapped fe f >>= recast
         _ -> do
             topCase <- isTopLevelCase e
             if topCase

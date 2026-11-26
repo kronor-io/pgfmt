@@ -99,14 +99,14 @@ formatBodies layOut stmt raw = case functionBody raw of
             -- leave it.
             _ -> pure (Right Nothing)
   where
-    layOutOne body (start, end, column) = do
-        result <- layOut column (slice start end body)
+    layOutOne body q = do
+        result <- layOut q.indent (slice q.start q.end body)
         pure case result of
             Left reason -> Left reason
             Right Nothing -> Right Nothing
             Right (Just new)
-                | TE.encodeUtf8 new == slice start end body -> Right Nothing
-                | otherwise -> Right (Just (start, end, TE.encodeUtf8 new))
+                | TE.encodeUtf8 new == slice q.start q.end body -> Right Nothing
+                | otherwise -> Right (Just Edit{start = q.start, end = q.end, text = TE.encodeUtf8 new})
 
 
 decodeJson :: ByteString -> Either LibPgQuery.LibPgQueryError [Value]
@@ -220,7 +220,7 @@ targets = go
 -- outside comments and strings, and not overlap an earlier match; the first
 -- such occurrence from the start of the target's line is taken. Targets with
 -- no such occurrence are left out.
-locateAll :: ByteString -> [Token] -> [Target] -> [(Int, Int, Int)]
+locateAll :: ByteString -> [Token] -> [Target] -> [Located]
 locateAll body toks = go []
   where
     starts = [t.start | t <- toks, not t.isComment]
@@ -231,7 +231,7 @@ locateAll body toks = go []
         | otherwise = Nothing
     go _ [] = []
     go used (t : ts) = case nthLineStart t.lineNo >>= \from -> firstMatch used t.query from of
-        Just m@(s, e, _) -> m : go ((s, e) : used) ts
+        Just m -> m : go ((m.start, m.end) : used) ts
         Nothing -> go used ts
     firstMatch used q from
         | BS.null q = Nothing
@@ -245,19 +245,36 @@ locateAll body toks = go []
                         if start `elem` starts
                             && end `elem` ends
                             && not (any (\(s, e) -> start < e && s < end) used)
-                            then Just (start, end, indentOf start)
+                            then Just Located{start, end, indent = indentOf start}
                             else firstMatch used q (start + 1)
     indentOf start =
         let startOfLine = maybe 0 (+ 1) (BS.elemIndexEnd 10 (BS.take start body))
          in BS.length (BC.takeWhile (== ' ') (BS.drop startOfLine body))
 
 
+-- | Where a query is in a body: its byte range, and the indentation of the
+-- line it starts on.
+data Located = Located
+    { start :: Int
+    , end :: Int
+    , indent :: Int
+    }
+
+
+-- | A byte range of a body, and its new text.
+data Edit = Edit
+    { start :: Int
+    , end :: Int
+    , text :: ByteString
+    }
+
+
 -- | Replace byte ranges of the body, in order.
-splice :: ByteString -> [(Int, Int, ByteString)] -> ByteString
-splice body changes = BS.concat (go 0 (sortOn (\(s, _, _) -> s) changes))
+splice :: ByteString -> [Edit] -> ByteString
+splice body changes = BS.concat (go 0 (sortOn (.start) changes))
   where
     go pos [] = [BS.drop pos body]
-    go pos ((s, e, new) : rest) = slice pos s body : new : go e rest
+    go pos (c : rest) = slice pos c.start body : c.text : go c.end rest
 
 
 -- | 'Nothing' when both statements' PL/pgSQL parses match once line numbers

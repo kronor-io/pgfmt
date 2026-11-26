@@ -95,12 +95,19 @@ nameParts :: Pg.RangeVar -> Int
 nameParts rv = length (filter (not . T.null) [rv ^. Pg.catalogname, rv ^. Pg.schemaname, rv ^. Pg.relname])
 
 
--- | A relation's name and the token after it.
-relationAt :: Pg.RangeVar -> R (D, Int, Int)
+-- | A relation's name as written, where it starts, and the token after it.
+data Relation = Relation
+    { name :: D
+    , at :: Int
+    , after :: Int
+    }
+
+
+relationAt :: Pg.RangeVar -> R Relation
 relationAt rv = do
     at <- tokAt (fromIntegral (rv ^. Pg.location))
     name <- relationName rv
-    pure (name, at, at + 2 * nameParts rv - 1)
+    pure Relation{name, at, after = at + 2 * nameParts rv - 1}
 
 
 -- | @create table@: one column or constraint per line, each but the last
@@ -111,7 +118,7 @@ createTable c = do
     when
         (isJust (c ^. Pg.maybe'ofTypename) || (not (null (c ^. Pg.inhRelations)) && isNothing (c ^. Pg.maybe'partbound)))
         (unsupported "a create table pgfmt does not lay out")
-    (name, relAt, open) <- relationAt rv
+    Relation{name, at = relAt, after = open} <- relationAt rv
     header <- wordsRun 0 relAt
     if isJust (c ^. Pg.maybe'partbound)
         then partitionOf c (header <+> name) open
@@ -129,7 +136,7 @@ partitionOf c head' at = do
         [p] | Just (Pg.Node'RangeVar rv) <- node p -> pure rv
         _ -> unsupported "a create table pgfmt cannot read"
     isPartition <- (&&) <$> tokIs at "partition" <*> tokIs (at + 1) "of"
-    (pname, pAt, pAfter) <- relationAt parent
+    Relation{name = pname, at = pAt, after = pAfter} <- relationAt parent
     unless (isPartition && pAt == at + 2) (unsupported "a create table pgfmt cannot read")
     w <- wordsRun at pAt
     end <- (+ 1) <$> lastTok
@@ -189,7 +196,7 @@ tableElement el s e = case node el of
     Just (Pg.Node'TableLikeClause l) -> do
         rv <- req "a like clause" (l ^. Pg.maybe'relation)
         k <- kw "like"
-        (name, _, after) <- relationAt rv
+        Relation{name, after} <- relationAt rv
         opts <- tailRun after e
         pure (k <+> name <> opts)
     _ -> unsupported "a table element pgfmt cannot read"
@@ -318,7 +325,7 @@ constraintBody before x a b = case x ^. Pg.contype of
         unless isRef (unsupported "a foreign key pgfmt cannot read")
         k <- kw "references"
         pk <- req "a foreign key" (x ^. Pg.maybe'pktable)
-        (name, pkAt, after) <- relationAt pk
+        Relation{name, at = pkAt, after} <- relationAt pk
         unless (pkAt == refAt + 1) (unsupported "a foreign key pgfmt cannot read")
         (cols, rest) <-
             if null (x ^. Pg.pkAttrs)
@@ -506,7 +513,7 @@ createTableAs c = do
 -- its own.
 asQuery :: Pg.RangeVar -> [Text] -> Pg.Node -> Maybe D -> R D
 asQuery rv cols q after = do
-    (name, relAt, next) <- relationAt rv
+    Relation{name, at = relAt, after = next} <- relationAt rv
     recursive <- anyM (`tokIs` "recursive") [0 .. relAt - 1]
     when recursive (unsupported "a recursive view")
     header <- wordsRun 0 relAt
@@ -565,7 +572,7 @@ createIndex ix = do
         )
         (unsupported "an index pgfmt does not lay out")
     rv <- req "an index" (ix ^. Pg.maybe'relation)
-    (rel, relAt, afterRel) <- relationAt rv
+    Relation{name = rel, at = relAt, after = afterRel} <- relationAt rv
     isOn <- tokIs (relAt - 1) "on"
     unless isOn (unsupported "an index pgfmt cannot read")
     let named = not (T.null (ix ^. Pg.idxname))
@@ -661,7 +668,7 @@ alterTable :: Pg.AlterTableStmt -> R D
 alterTable a = do
     unless (a ^. Pg.objtype == Pg.OBJECT_TABLE) (unsupported "an alter pgfmt does not lay out")
     rv <- req "an alter table" (a ^. Pg.maybe'relation)
-    (rel, relAt, afterRel) <- relationAt rv
+    Relation{name = rel, at = relAt, after = afterRel} <- relationAt rv
     header <- wordsRun 0 relAt
     end <- (+ 1) <$> lastTok
     starts <- partsBetween afterRel end
