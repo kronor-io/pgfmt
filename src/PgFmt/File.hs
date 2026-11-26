@@ -181,52 +181,21 @@ assemble source replacements =
 
 formatOne :: Options -> ByteString -> [Token] -> Statement -> IO Replacement
 formatOne opts source toks stmt =
-    case [t | t <- toks, t.start >= stmt.start, t.end <= stmt.end] of
-        [] -> pure (keep stmt.start stmt.end "empty statement")
-        inside -> do
-            -- The statement proper: from its first token that is not a comment
-            -- to its last. Comments and whitespace on either side stay where
-            -- they are.
-            let code = dropWhileEnd (.isComment) (dropWhile (.isComment) inside)
-                bodyStart = case code of
-                    t : _ -> t.start
-                    [] -> stmt.end
-                bodyEnd = maximum (bodyStart : map (.end) code)
-                body = BS.take (bodyEnd - bodyStart) (BS.drop bodyStart source)
-                lineNo = 1 + BS.count 10 (BS.take bodyStart source)
-                -- The column the statement starts at, when only whitespace
-                -- precedes it on its line: its other lines line up with it.
-                lineBefore = decode (snd (BS.breakEnd (== 10) (BS.take bodyStart source)))
-                column = if T.all (== ' ') lineBefore then T.length lineBefore else 0
-                done outcome new expected =
-                    Replacement
-                        { from = bodyStart
-                        , to = bodyEnd
-                        , text = new
-                        , report = StatementReport{line = lineNo, outcome}
-                        , expected
-                        }
-            if null code
-                then pure (done (Kept "only comments") Nothing original)
-                else do
-                    bodies <- Plpgsql.formatBodies (formatEmbedded opts) body stmt.raw
-                    withBody <- case bodies of
-                        Left reason -> pure (Left reason)
-                        Right Nothing -> pure (Right (body, False))
-                        Right (Just body') -> do
-                            reparsed <- LibPgQuery.parse body'
-                            pure case reparsed of
-                                Right tree | [_] <- tree ^. Pg.stmts -> Right (body', True)
-                                _ -> Left "the statement with its formatted PL/pgSQL body does not parse"
-                    case withBody of
-                        Left reason -> pure (done (Failed reason) Nothing original)
-                        Right (code', bodyChanged) -> do
-                            laid <- layOut opts column code'
-                            pure case laid of
-                                Right (used, formatted) -> done (FormattedBy used) (Just formatted) code'
-                                Left outcome@(Kept _)
-                                    | bodyChanged -> done outcome (Just (decode code')) code'
-                                Left outcome -> done outcome Nothing original
+    case statementCode source toks stmt of
+        Nothing -> pure (keep stmt.start stmt.end "empty statement")
+        Just code
+            | code.start == code.end -> pure (done code (Kept "only comments") Nothing original)
+            | otherwise -> do
+                prepared <- formatBody opts code.text stmt.raw
+                case prepared of
+                    Left reason -> pure (done code (Failed reason) Nothing original)
+                    Right p -> do
+                        laid <- layOut opts code.column p.sql
+                        pure case laid of
+                            Right (used, formatted) -> done code (FormattedBy used) (Just formatted) p.sql
+                            Left outcome@(Kept _)
+                                | p.bodyChanged -> done code outcome (Just (decode p.sql)) p.sql
+                            Left outcome -> done code outcome Nothing original
   where
     -- The statement as written, which an unchanged one must still parse to.
     original = BS.take (stmt.end - stmt.start) (BS.drop stmt.start source)
@@ -235,9 +204,78 @@ formatOne opts source toks stmt =
             { from = a
             , to = b
             , text = Nothing
-            , report = StatementReport{line = 1 + BS.count 10 (BS.take a source), outcome = Kept reason}
+            , report = StatementReport{line = lineAt source a, outcome = Kept reason}
             , expected = original
             }
+    done code outcome new expected =
+        Replacement
+            { from = code.start
+            , to = code.end
+            , text = new
+            , report = StatementReport{line = lineAt source code.start, outcome}
+            , expected
+            }
+
+
+-- | A statement proper: from its first token that is not a comment to its
+-- last. Comments and whitespace on either side stay where they are.
+data StatementCode = StatementCode
+    { start :: Int
+    , end :: Int
+    -- ^ Equal to 'start' when the statement is only comments.
+    , text :: ByteString
+    , column :: Int
+    -- ^ The column the statement starts at, when only whitespace precedes it
+    -- on its line, which its other lines line up with; else 0.
+    }
+
+
+-- | Where a statement's code is; 'Nothing' when it has no tokens at all.
+statementCode :: ByteString -> [Token] -> Statement -> Maybe StatementCode
+statementCode source toks stmt = case [t | t <- toks, t.start >= stmt.start, t.end <= stmt.end] of
+    [] -> Nothing
+    inside ->
+        let code = dropWhileEnd (.isComment) (dropWhile (.isComment) inside)
+            start = case code of
+                t : _ -> t.start
+                [] -> stmt.end
+            end = maximum (start : map (.end) code)
+            lineBefore = decode (snd (BS.breakEnd (== 10) (BS.take start source)))
+         in Just
+                StatementCode
+                    { start
+                    , end
+                    , text = BS.take (end - start) (BS.drop start source)
+                    , column = if T.all (== ' ') lineBefore then T.length lineBefore else 0
+                    }
+
+
+-- | The 1-based line of a byte offset.
+lineAt :: ByteString -> Int -> Int
+lineAt source offset = 1 + BS.count 10 (BS.take offset source)
+
+
+-- | A statement ready to lay out: with its PL/pgSQL body formatted, if it has
+-- one pgfmt formats.
+data Prepared = Prepared
+    { sql :: ByteString
+    , bodyChanged :: Bool
+    }
+
+
+-- | Format a statement's PL/pgSQL body, and check the statement still parses
+-- with it.
+formatBody :: Options -> ByteString -> Pg.RawStmt -> IO (Either Text Prepared)
+formatBody opts code raw = do
+    bodies <- Plpgsql.formatBodies (formatEmbedded opts) code raw
+    case bodies of
+        Left reason -> pure (Left reason)
+        Right Nothing -> pure (Right Prepared{sql = code, bodyChanged = False})
+        Right (Just code') -> do
+            reparsed <- LibPgQuery.parse code'
+            pure case reparsed of
+                Right tree | [_] <- tree ^. Pg.stmts -> Right Prepared{sql = code', bodyChanged = True}
+                _ -> Left "the statement with its formatted PL/pgSQL body does not parse"
 
 
 -- | Lay out one statement (no comments before or after it), starting at
