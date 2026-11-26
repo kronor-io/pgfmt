@@ -23,9 +23,9 @@ ident name = do
             Nothing -> False
     when (T.any (== '"') name) (unsupported "an identifier with a double quote in it")
     case Map.lookup name ns of
-        Just (True, False) -> txt ("\"" <> name <> "\"")
-        Just (False, True) | plain -> txt name
-        Just (True, True) -> unsupported ("identifier " <> name <> " written both quoted and unquoted")
+        Just NameSpelling{quoted = True, unquoted = False} -> txt ("\"" <> name <> "\"")
+        Just NameSpelling{quoted = False, unquoted = True} | plain -> txt name
+        Just NameSpelling{quoted = True, unquoted = True} -> unsupported ("identifier " <> name <> " written both quoted and unquoted")
         _ | not plain -> unsupported ("identifier " <> name <> " not found quoted")
         _ -> unsupported ("identifier " <> name <> " not found in the source")
 
