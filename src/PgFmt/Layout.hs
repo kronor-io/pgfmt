@@ -4,8 +4,8 @@
 
 -- | pgfmt's own layout for DML statements (SELECT, INSERT, UPDATE, DELETE,
 -- VALUES), rendered from libpg_query's parse tree; and for CREATE TABLE,
--- CREATE VIEW and CREATE ... AS, in a style of its own (see the DDL section
--- at the end).
+-- CREATE VIEW, CREATE ... AS, CREATE INDEX and ALTER TABLE, in a style of
+-- its own (see the DDL section at the end).
 --
 -- This is the layout "PgFmt.Render" gives over postgresql-syntax's AST, and
 -- it has to stay byte for byte the same: the rules (leading commas, one select
@@ -49,7 +49,7 @@ import Data.ByteString (ByteString)
 import Data.Bits ((.&.))
 import Data.ByteString qualified as BS
 import Data.Int (Int32)
-import Data.Char (isAsciiLower, isAsciiUpper, isDigit, toLower)
+import Data.Char (isAscii, isAsciiLower, isAsciiUpper, isDigit, toLower)
 import Data.Foldable (toList)
 import Data.IntMap.Strict qualified as IM
 import Data.IntSet qualified as IS
@@ -70,7 +70,7 @@ import Prettyprinter.Render.Text (renderStrict)
 import Unsafe.Coerce (unsafeCoerce)
 
 
--- | Lay out one DML, CREATE TABLE or CREATE VIEW statement (no comments
+-- | Lay out one DML statement or one of the DDL statements it knows (no comments
 -- before or after it, no semicolon), keywords in upper case if asked,
 -- starting at column 0 without a trailing newline. 'Left' says why not: the
 -- statement is none of those, or has
@@ -815,6 +815,14 @@ identAt i name = do
     t <- tokM i
     case t of
         Just tk | identText tk == Just name -> txt (if "\"" `T.isPrefixOf` tk.text then "\"" <> name <> "\"" else name)
+        -- PostgreSQL cuts a name longer than 63 bytes to 63.
+        Just tk
+            | Just full <- identText tk
+            , not ("\"" `T.isPrefixOf` tk.text)
+            , T.all isAscii full
+            , T.length full > 63
+            , T.take 63 full == name ->
+                txt full
         _ -> ident name
 
 
@@ -3941,6 +3949,8 @@ statement n = case node n of
     Just (Pg.Node'DeleteStmt s) -> deleteStmt s
     Just (Pg.Node'CreateStmt c) -> local (\env -> env{tightTypes = True}) (createTable c)
     Just (Pg.Node'ViewStmt v) -> createView v
+    Just (Pg.Node'IndexStmt ix) -> createIndex ix
+    Just (Pg.Node'AlterTableStmt a) -> local (\env -> env{tightTypes = True}) (alterTable a)
     Just (Pg.Node'CreateTableAsStmt c) -> createTableAs c
     Just (Pg.Node'CallStmt c) -> do
         f <- req "a call" (c ^. Pg.maybe'funccall)
@@ -3948,7 +3958,7 @@ statement n = case node n of
         k <- kw "call"
         d <- funcApplication MP e f
         pure (k <+> d)
-    _ -> unsupported "not DML, create table or create view"
+    _ -> unsupported "not DML or DDL pgfmt lays out"
 
 
 -- | "PgFmt.Render"'s @renderPreparableStmt@, for a common table
@@ -4515,24 +4525,66 @@ constraintBody before x a b = case x ^. Pg.contype of
 
 
 -- | A check constraint's condition, in its parentheses: on one line if
--- short, otherwise each top-level @and@ (or @or@) on a line of its own.
+-- short, otherwise broken as 'boolBlock' breaks it.
 checkCondition :: Pg.Node -> R D
 checkCondition n = do
     e <- top n
     inline <- expr MR e
-    case node n of
-        Just (Pg.Node'BoolExpr be)
-            | e.lv == 0
-            , Just op <- lookup (be ^. Pg.boolop) [(Pg.AND_EXPR, "and"), (Pg.OR_EXPR, "or")]
-            , len inline > checkInlineThreshold
-            , first : rest <- be ^. Pg.args -> do
-                opK <- kw op
-                fd <- child n first >>= expr MR
-                rds <- traverse (child n >=> expr MR) rest
-                pure ("(" <> nest indentSize (hardline <> vsep (fd : map (opK <+>) rds)) <> hardline <> ")")
-        _ -> do
+    if e.lv == 0 && isAndOr n && len inline > checkInlineThreshold
+        then do
+            b <- boolBlock e
+            pure ("(" <> nest indentSize (hardline <> b) <> hardline <> ")")
+        else do
             d <- ddlExpr n
             pure ("(" <> d <> ")")
+
+
+-- | Whether a node is an @and@ or @or@.
+isAndOr :: Pg.Node -> Bool
+isAndOr n = case node n of
+    Just (Pg.Node'BoolExpr be) -> be ^. Pg.boolop `elem` [Pg.AND_EXPR, Pg.OR_EXPR]
+    _ -> False
+
+
+-- | A long condition in DDL: each operand of its top-level @and@ (or @or@)
+-- on a line of its own, the operator first; an operand in parentheses that
+-- is long itself broken the same way inside them.
+boolBlock :: E -> R D
+boolBlock e = case node e.en of
+    Just (Pg.Node'BoolExpr be)
+        | Just op <- lookup (be ^. Pg.boolop) [(Pg.AND_EXPR, "and"), (Pg.OR_EXPR, "or")]
+        , first : rest <- be ^. Pg.args -> do
+            opK <- kw op
+            fd <- child e.en first >>= boolPart
+            rds <- traverse (child e.en >=> boolPart) rest
+            pure (vsep (fd : map (opK <+>) rds))
+    _ -> expr MR e
+
+
+-- | An operand of 'boolBlock'.
+boolPart :: E -> R D
+boolPart c = do
+    inline <- expr MR c
+    if c.lv == 1 && isAndOr c.en && len inline > checkInlineThreshold
+        then do
+            inner <- boolBlock c{lv = 0}
+            pure ("(" <> nest indentSize (hardline <> inner) <> hardline <> ")")
+        else pure inline
+
+
+-- | An index's @where@: on one line if short, otherwise broken as
+-- 'boolBlock' breaks it.
+indexWhere :: Pg.Node -> R D
+indexWhere n = do
+    k <- kw "where"
+    e <- top n
+    inline <- expr MR e
+    if
+        | len inline <= checkInlineThreshold || not (isAndOr n) -> pure (k <+> inline)
+        | e.lv == 0 -> do
+            b <- boolBlock e
+            pure (k <> nest indentSize (hardline <> b))
+        | otherwise -> (k <+>) <$> boolPart e
 
 
 -- | An expression in a column or constraint: on one line if short,
@@ -4661,3 +4713,213 @@ asQuery rv cols q after = do
             Just tk | T.toLower tk.text == "as" -> pure j
             Just tk | tk.isKeyword && tk.kind /= Pg.IDENT -> findAs (j + 1)
             _ -> unsupported "a create as pgfmt cannot read"
+
+
+-- | The top-level commas from token @a@ to before @b@: where each of the
+-- parts they separate starts.
+partsBetween :: Int -> Int -> R [Int]
+partsBetween a b = go a [a]
+  where
+    go j acc
+        | j >= b = pure (reverse acc)
+        | otherwise = do
+            t <- tokL j
+            case t of
+                "(" -> do
+                    m <- matchOf j
+                    maybe (unsupported "an unclosed parenthesis") (\c -> go (c + 1) acc) m
+                "," -> go (j + 1) (j + 1 : acc)
+                _ -> go (j + 1) acc
+
+
+-- | @create index@: the index's name on its first line, then @on@ the
+-- table and its columns, and the @where@ condition, each on a line of its
+-- own.
+createIndex :: Pg.IndexStmt -> R D
+createIndex ix = do
+    when
+        ( not (null (ix ^. Pg.indexIncludingParams))
+            || not (null (ix ^. Pg.options))
+            || not (T.null (ix ^. Pg.tableSpace))
+            || not (null (ix ^. Pg.excludeOpNames))
+        )
+        (unsupported "an index pgfmt does not lay out")
+    rv <- req "an index" (ix ^. Pg.maybe'relation)
+    (rel, relAt, afterRel) <- relationAt rv
+    isOn <- tokIs (relAt - 1) "on"
+    unless isOn (unsupported "an index pgfmt cannot read")
+    let named = not (T.null (ix ^. Pg.idxname))
+        nameAt = relAt - 2
+    header <- wordsRun 0 (if named then nameAt else relAt - 1)
+    nameD <- if named then (" " <>) <$> identAt nameAt (ix ^. Pg.idxname) else pure mempty
+    onK <- kw "on"
+    -- @using gin@, if written.
+    usingWritten <- tokIs afterRel "using"
+    (usingD, open) <-
+        if usingWritten
+            then do
+                u <- kw "using"
+                m <- identAt (afterRel + 1) (ix ^. Pg.accessMethod)
+                pure (" " <> u <+> m, afterRel + 2)
+            else pure (mempty, afterRel)
+    close <- expectParen open
+    starts <- partsBetween (open + 1) close
+    unless (length starts == length (ix ^. Pg.indexParams)) (unsupported "an index pgfmt cannot read")
+    let ends = map (subtract 1) (drop 1 starts) ++ [close]
+    cols <- forM (zip3 (ix ^. Pg.indexParams) starts ends) \(p, s, e) -> case node p of
+        Just (Pg.Node'IndexElem el) -> indexElem el s e
+        _ -> unsupported "an index column pgfmt cannot read"
+    whereAt <- maybe (pure Nothing) (clauseAt [["where"]]) (ix ^. Pg.maybe'whereClause)
+    end <- (+ 1) <$> lastTok
+    between <- tailRun (close + 1) (fromMaybe end whereAt)
+    wh <- traverse indexWhere (ix ^. Pg.maybe'whereClause)
+    let onLine = onK <+> rel <> usingD <+> "(" <> commaJoin cols <> ")" <> between
+    onBreak <- brk mempty (relAt - 1)
+    whBreak <- brkAt mempty whereAt
+    pure (header <> nameD <> nest indentSize (onBreak <> onLine <> maybe mempty (whBreak <>) wh))
+
+
+-- | An index column, from token @s@ to before @e@: a column or an
+-- expression, its operator class, its order.
+indexElem :: Pg.IndexElem -> Int -> Int -> R D
+indexElem el s e = do
+    unless (null (el ^. Pg.collation) && null (el ^. Pg.opclassopts) && T.null (el ^. Pg.indexcolname)) (unsupported "an index column pgfmt does not lay out")
+    (d, next) <- case el ^. Pg.maybe'expr of
+        Nothing -> do
+            n <- identAt s (el ^. Pg.name)
+            pure (n, s + 1)
+        Just ex -> do
+            -- An expression in parentheses, or a function call: it ends at
+            -- the first parenthesis's match.
+            open <- nextParen s
+            close <- matchOf open >>= req "an index expression"
+            d <- top ex >>= expr MR
+            pure (d, close + 1)
+    opclass <- strsOf (el ^. Pg.opclass)
+    (opD, after) <-
+        if null opclass
+            then pure (mempty, next)
+            else do
+                q <- qualNameAt next opclass
+                pure (" " <> q, next + 2 * length opclass - 1)
+    t <- tailRun after e
+    pure (d <> opD <> t)
+
+
+-- | @alter table@: each action on a line of its own, each but the last
+-- followed by its comma.
+alterTable :: Pg.AlterTableStmt -> R D
+alterTable a = do
+    unless (a ^. Pg.objtype == Pg.OBJECT_TABLE) (unsupported "an alter pgfmt does not lay out")
+    rv <- req "an alter table" (a ^. Pg.maybe'relation)
+    (rel, relAt, afterRel) <- relationAt rv
+    header <- wordsRun 0 relAt
+    end <- (+ 1) <$> lastTok
+    starts <- partsBetween afterRel end
+    let cmds = a ^. Pg.cmds
+        ends = map (subtract 1) (drop 1 starts) ++ [end]
+        n = length cmds
+    unless (length starts == n) (unsupported "an alter table pgfmt cannot read")
+    lines' <- forM (zip4 [0 :: Int ..] cmds starts ends) \(i, c, s, e) -> do
+        cmd <- case node c of
+            Just (Pg.Node'AlterTableCmd x) -> pure x
+            _ -> unsupported "an alter table pgfmt cannot read"
+        d <- alterCmd cmd s e
+        b <- brk mempty s
+        blank <- asks (IS.member s . (.blankLineBefore))
+        let gap = if blank && i > 0 then hardline else mempty
+        pure (b <> gap <> d <> (if i < n - 1 then "," else mempty))
+    pure (header <+> rel <> nest indentSize (mconcat lines'))
+
+
+-- | One action of an @alter table@, from token @s@ to before @e@.
+alterCmd :: Pg.AlterTableCmd -> Int -> Int -> R D
+alterCmd c s e = case c ^. Pg.subtype of
+    Pg.AT_AddColumn -> case def of
+        Just (Pg.Node'ColumnDef cd) -> do
+            at <- tokAt (fromIntegral (cd ^. Pg.location))
+            w <- wordsRun s at
+            d <- columnDef cd at e
+            pure (w <+> d)
+        _ -> cannot
+    Pg.AT_AddConstraint -> case def of
+        Just (Pg.Node'Constraint x) -> do
+            at <- tokAt (fromIntegral (x ^. Pg.location))
+            w <- wordsRun s at
+            d <- constraint x at e
+            pure (w <+> d)
+        _ -> cannot
+    t | t `elem` [Pg.AT_DropColumn, Pg.AT_DropConstraint, Pg.AT_ValidateConstraint, Pg.AT_DropNotNull, Pg.AT_SetNotNull, Pg.AT_DropIdentity, Pg.AT_EnableTrig, Pg.AT_DisableTrig, Pg.AT_EnableAlwaysTrig, Pg.AT_EnableReplicaTrig] -> withName Nothing
+    Pg.AT_ColumnDefault -> withName (c ^. Pg.maybe'def)
+    t | t `elem` [Pg.AT_EnableRowSecurity, Pg.AT_DisableRowSecurity, Pg.AT_ForceRowSecurity, Pg.AT_NoForceRowSecurity, Pg.AT_SetLogged, Pg.AT_SetUnLogged, Pg.AT_EnableTrigAll, Pg.AT_DisableTrigAll, Pg.AT_EnableTrigUser, Pg.AT_DisableTrigUser] -> wordsRun s e
+    Pg.AT_AlterColumnType -> case def of
+        Just (Pg.Node'ColumnDef cd) | isNothing (cd ^. Pg.maybe'collClause) -> do
+            nameAt <- nameToken
+            w <- wordsRun s nameAt
+            nm <- identAt nameAt (c ^. Pg.name)
+            tn <- req "an alter column" (cd ^. Pg.maybe'typeName)
+            tyAt <- tokAt (fromIntegral (tn ^. Pg.location))
+            w2 <- wordsRun (nameAt + 1) tyAt
+            ty <- typeName tn
+            using <- case cd ^. Pg.maybe'rawDefault of
+                Nothing -> pure mempty
+                Just ex -> do
+                    u <- kw "using"
+                    d <- ddlExpr ex
+                    pure (" " <> u <+> d)
+            pure (w <+> nm <+> w2 <+> ty <> using)
+        _ -> cannot
+    t | t `elem` [Pg.AT_SetRelOptions, Pg.AT_ResetRelOptions] -> do
+        open <- nextParen s
+        w <- wordsRun s open
+        close <- expectParen open
+        opts <- case def of
+            Just (Pg.Node'List l) -> forM (l ^. Pg.items) \o -> case node o of
+                Just (Pg.Node'DefElem de) | T.null (de ^. Pg.defnamespace) -> do
+                    at <- tokAt (fromIntegral (de ^. Pg.location))
+                    nm <- identAt at (de ^. Pg.defname)
+                    case de ^. Pg.maybe'arg of
+                        Nothing -> pure nm
+                        Just _ -> do
+                            eq <- tokIs (at + 1) "="
+                            v <- tokM (at + 2)
+                            case v of
+                                Just vt | eq, vt.kind `elem` [Pg.ICONST, Pg.FCONST] -> pure (nm <> " = " <> pretty (T.toLower vt.text))
+                                Just vt | eq, vt.kind == Pg.SCONST -> pure (nm <> " = " <> raw vt.text)
+                                _ -> cannot
+                _ -> cannot
+            _ -> cannot
+        t' <- tailRun (close + 1) e
+        pure (w <+> "(" <> commaJoin opts <> ")" <> t')
+    _ -> unsupported "an alter table action pgfmt does not lay out"
+  where
+    def = c ^. Pg.maybe'def >>= node
+    cannot :: R a
+    cannot = unsupported "an alter table action pgfmt cannot read"
+    -- The named column, constraint or trigger: after the keywords that
+    -- start the action.
+    nameToken = go (s + 1)
+      where
+        go j = do
+            w <- tokL j
+            if w `elem` ["column", "constraint", "trigger", "if", "exists"] then go (j + 1) else pure j
+    withName mexpr = do
+        nameAt <- nameToken
+        unless (nameAt < e) cannot
+        w <- wordsRun s nameAt
+        nm <- identAt nameAt (c ^. Pg.name)
+        case mexpr of
+            Nothing -> do
+                t <- tailRun (nameAt + 1) e
+                pure (w <+> nm <> t)
+            Just ex -> do
+                -- @set default@, then the expression.
+                defaultAt <- findDefault (nameAt + 1)
+                w2 <- wordsRun (nameAt + 1) (defaultAt + 1)
+                d <- ddlExpr ex
+                pure (w <+> nm <+> w2 <+> d)
+    findDefault j
+        | j >= e = cannot
+        | otherwise = do
+            w <- tokL j
+            if w == "default" then pure j else findDefault (j + 1)

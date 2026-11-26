@@ -216,7 +216,7 @@ Two backends lay statements out, and they have different styles:
 
 - `syntax`: pgfmt's own renderer. It handles `select`, `insert`, `update`,
   `delete` and `values`, with commas at the start of lines, and `create
-  table` and `create view` (see below). It lays
+  table`, `create view`, `create index` and `alter table` (see below). It lays
   statements out from PostgreSQL's own parse tree (libpg_query's), keeping
   what the tree forgets from the source: redundant parentheses, `!=`, `as`
   before an alias, `inner join`, how a type is spelled, and comments. A
@@ -291,16 +291,26 @@ from orders o
 where o.status = 'paid';
 ```
 
-Any other DDL goes to `libpg-query`, as does a table with something
-`syntax` does not handle (`exclude`, storage options, `partition of`):
+`create index` puts `on` and `where` on lines of their own, and
+`alter table` one action per line with the comma at the end. A long
+condition, in an index's `where` or a `check`, breaks at its top-level
+`and`s or `or`s:
 
 ```sql
 alter table orders
     add column note text,
     add constraint note_len check (length(note) < 500);
 create index concurrently orders_status_idx
-on orders using btree (status)
-where status <> 'paid';
+    on orders (status)
+    where status <> 'paid';
+```
+
+Any other DDL goes to `libpg-query`, as does a statement with something
+`syntax` does not handle (`exclude`, `include`, `partition of`, ...):
+
+```sql
+create sequence order_numbers start 1000 cache 10;
+grant select on orders to reporting;
 ```
 
 ## PL/pgSQL

@@ -124,13 +124,24 @@ expected =
       (False, "create or replace view v (x, y) as select a, b from t where c with local check option", "create or replace view v (x, y) as\nselect\n    a\n  , b\nfrom t\nwhere c\nwith local check option")
     , (True, "create materialized view m as select a from t with no data", "CREATE MATERIALIZED VIEW m AS\nSELECT a\nFROM t\nWITH NO DATA")
     , (False, "create temp table t on commit drop as select 1", "create temp table t on commit drop as\nselect 1")
+    , -- create index: on and where on lines of their own, using only if
+      -- written; a long where breaks at its ands and ors.
+      (False, "CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS i ON s.t(a, (lower(b)) desc nulls last) WHERE c", "create unique index concurrently if not exists i\n    on s.t (a, (lower(b)) desc nulls last)\n    where c")
+    , (True, "create index i on t using gin (name gin_trgm_ops)", "CREATE INDEX i\n    ON t USING gin (name gin_trgm_ops)")
+    , (False, "create index i -- why\n  on t (a) where (status = 'pre_flight_check' or status = 'initializing' or status = 'waiting_for_payment') and kind = 'x'", "create index i -- why\n    on t (a)\n    where\n        (\n            status = 'pre_flight_check'\n            or status = 'initializing'\n            or status = 'waiting_for_payment'\n        )\n        and kind = 'x'")
+    , -- alter table: one action per line, trailing commas.
+      (False, "alter table t add column a   int not null default 0", "alter table t\n    add column a int not null default 0")
+    , (False, "alter table t drop column if exists a cascade, drop constraint c, add constraint fk foreign key (b) references u(id) not valid, validate constraint d", "alter table t\n    drop column if exists a cascade,\n    drop constraint c,\n    add constraint fk foreign key (b) references u(id) not valid,\n    validate constraint d")
+    , (True, "alter table t alter column a type numeric(10,2) using a::numeric, alter column b set default now(), alter column c drop not null, enable row level security, set (fillfactor = 70)", "ALTER TABLE t\n    ALTER COLUMN a TYPE NUMERIC(10, 2) USING a::NUMERIC,\n    ALTER COLUMN b SET DEFAULT now(),\n    ALTER COLUMN c DROP NOT NULL,\n    ENABLE ROW LEVEL SECURITY,\n    SET (fillfactor = 70)")
     ]
 
 
 -- | Statements the renderer leaves to the caller.
 refused :: [Text]
 refused =
-    [ "create index i on t (a)"
+    [ "create sequence s"
+    , "create index i on t (a) include (b)"
+    , "alter table t attach partition p for values from (1) to (2)"
     , "create table t (a int, exclude using gist (a with =))"
     , "create table t (a int) with (fillfactor = 70)"
     , "create table p partition of t for values from (1) to (2)"

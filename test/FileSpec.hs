@@ -41,11 +41,11 @@ cases =
         , expected = Output "-- header\n\nselect\n    a\n  , b\nfrom t\nwhere x = 1;\n\n/* between */\nselect 1 ;\n"
         }
     , Case
-        { name = "syntax: DDL other than create table and create view is left alone"
+        { name = "syntax: DDL it has no layout for is left alone"
         , backend = Syntax
         , keywordCase = Lower
-        , input = "CREATE INDEX i ON t (a);\n"
-        , expected = Unchanged "pgfmt does not lay it out: not DML, create table or create view"
+        , input = "CREATE SEQUENCE s;\n"
+        , expected = Unchanged "pgfmt does not lay it out: not DML or DDL pgfmt lays out"
         }
     , Case
         { name = "syntax: a comment inside a statement stays at its place"
@@ -142,8 +142,8 @@ cases =
         { name = "upper: keywords from both backends, identifiers spelled like keywords untouched"
         , backend = Auto
         , keywordCase = Upper
-        , input = "create table t (name text, type int);\ncreate index i on t (name, type);\nselect name, type from t where name = 'x';\n"
-        , expected = Output "CREATE TABLE t (\n    name text,\n    type INT\n);\nCREATE INDEX i\nON t USING btree (name, type);\nSELECT\n    name\n  , type\nFROM t\nWHERE name = 'x';\n"
+        , input = "create table t (name text, type int);\ncomment on column t.type is 'the type';\nselect name, type from t where name = 'x';\n"
+        , expected = Output "CREATE TABLE t (\n    name text,\n    type INT\n);\nCOMMENT ON COLUMN t.type IS 'the type';\nSELECT\n    name\n  , type\nFROM t\nWHERE name = 'x';\n"
         }
     , Case
         { name = "PL/pgSQL: embedded statements are laid out, INTO and control flow left alone"
