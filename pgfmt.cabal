@@ -55,6 +55,7 @@ library
   exposed-modules:
     PgFmt
     PgFmt.File
+    PgFmt.Haskell
     PgFmt.LibPgQuery
     PgFmt.Plpgsql
     PgFmt.Render
@@ -115,6 +116,16 @@ test-suite file
   type:           exitcode-stdio-1.0
   hs-source-dirs: test
   main-is:        FileSpec.hs
+  build-depends:
+    , base
+    , pgfmt
+    , text
+
+test-suite haskell
+  import:         shared
+  type:           exitcode-stdio-1.0
+  hs-source-dirs: test
+  main-is:        HaskellSpec.hs
   build-depends:
     , base
     , pgfmt

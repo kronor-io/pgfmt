@@ -33,6 +33,9 @@ bodies. Before it rewrites a statement, it parses the new text again and checks
 that PostgreSQL sees the same statement. If the check fails, the statement is
 left as it was.
 
+It also formats the SQL in a Haskell file's
+[hasql-th quasiquotes](#haskell-hasql-th-quasiquotes).
+
 pgfmt is one of the tools Kronor uses to keep a PostgreSQL schema in sqitch, with [sqiff](https://github.com/kronor-io/sqiff), [sqint](https://github.com/kronor-io/sqint), [create-migration](https://github.com/kronor-io/sqitch-with-templates) and [psql-retry](https://github.com/kronor-io/psql-retry). [sqitchcraft](https://kronor-io.github.io/sqitchcraft/) shows how they fit together: the repository layout they assume, one change from an edited file to a deploy, and instructions for coding agents.
 
 ## Install
@@ -317,13 +320,62 @@ gets `using btree`, and `interval '7 days'` can become `'7 days'::interval`.
   `$$`-quoted strings that contain comments. Those statements are left as they
   are and pgfmt exits 2.
 
-## hasql-th
+## Haskell: hasql-th quasiquotes
 
-`--dialect hasql-th` lets the `syntax` backend read the extensions that
-[hasql-th](https://github.com/nikita-volkov/hasql-th) adds to SQL in its
-quasiquotes, such as nullability markers (`$1 :: int8?`). libpg_query cannot
-read those, so a file using them is not valid SQL to pgfmt. To format a
-quasiquote's SQL, use the library's `PgFmt.Render.formatSql`.
+For `.hs` files, pgfmt formats the SQL in
+[hasql-th](https://github.com/nikita-volkov/hasql-th) quasiquotes and leaves
+the Haskell alone, so it sits next to fourmolu or ormolu, which leave
+quasiquotes alone:
+
+```bash
+pgfmt src/**/*.hs
+```
+
+```haskell
+userEmails :: Statement Int64 (Vector (Text, Maybe Text))
+userEmails =
+    [vectorStatement|
+      select u.name :: text, e.address :: text? from users u left join emails e on e.user_id = u.id where u.org_id = $1 :: int8 order by u.name
+    |]
+```
+
+```haskell
+userEmails :: Statement Int64 (Vector (Text, Maybe Text))
+userEmails =
+    [vectorStatement|
+        select
+            u.name::text
+          , e.address::text?
+        from users u
+        left join emails e
+          on e.user_id = u.id
+        where u.org_id = $1::int8
+        order by u.name
+    |]
+```
+
+The SQL goes one indent past the opening `[`, and the closing `|]` lines up
+under it. The `syntax` backend lays it out, in lower case, with hasql-th's
+extensions such as nullability markers (`text?`); `--backend` and
+`--keyword-case` apply to SQL files only. A quasiquote's SQL is only replaced
+if it parses back to the same postgresql-syntax AST, and the file must still
+have the same quasiquotes and the same text around them.
+
+- **Which quasiquotes:** hasql-th's `singletonStatement`, `maybeStatement`,
+  `vectorStatement`, `foldStatement`, `resultlessStatement`,
+  `rowsAffectedStatement`, and `uncheckedSql`, qualified or not
+  (`[TH.singletonStatement|`). `--quoter NAME` adds another one, for your own
+  aliases.
+- **What is left alone:** single-line quasiquotes, and SQL postgresql-syntax
+  does not parse (`-v` lists them), such as DDL in `uncheckedSql`.
+- **Finding them:** pgfmt skips comments, string and character literals as GHC
+  does, so a `[singletonStatement|` in a string is not a quasiquote. As in GHC
+  with `QuasiQuotes` on, `[name|` with no space before the bar opens one.
+- **stdin:** `--haskell` reads it as Haskell: `pgfmt --haskell < Foo.hs`.
+
+`--dialect hasql-th` lets the `syntax` backend read the same extensions in a
+SQL file, but libpg_query cannot read them, so such a file is not valid SQL to
+pgfmt. The library's `PgFmt.Render.formatSql` formats one quasiquote's SQL.
 
 ### Kronor's extensions
 
@@ -349,6 +401,8 @@ cabal build --project-file=cabal.project.kronor exe:pgfmt
 pgfmt is also a Haskell library:
 
 - `PgFmt.File.formatFile`: a whole file, with a report on each statement.
+- `PgFmt.Haskell.formatHaskell`: the hasql-th quasiquotes of a Haskell file,
+  with a report on each.
 - `PgFmt.Render.formatStatement`: one DML statement with the `syntax` layout.
 - `PgFmt.Render.formatSql`: the SQL of one hasql-th quasiquote.
 

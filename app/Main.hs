@@ -8,6 +8,7 @@ import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
 import Options.Applicative
 import PgFmt
+import PgFmt.Haskell (Quoters, defaultQuoters, formatHaskell)
 import PgFmt.LibPgQuery (LibPgQueryError (..), PrettyOptions (..), defaultPrettyOptions)
 import System.Exit (ExitCode (..), exitWith)
 import System.IO (stderr)
@@ -17,6 +18,8 @@ data Cli = Cli
     { check :: Bool
     , verbose :: Bool
     , options :: Options
+    , haskell :: Bool
+    , quoters :: Quoters
     , files :: [FilePath]
     }
 
@@ -54,8 +57,25 @@ cli = do
             )
     indentSize <- option auto (long "indent" <> metavar "N" <> value defaultPrettyOptions.indentSize <> showDefault <> help "libpg_query backend: spaces per indent level")
     maxLineLength <- option auto (long "width" <> metavar "N" <> value defaultPrettyOptions.maxLineLength <> showDefault <> help "libpg_query backend: line length to wrap lists at")
+    haskell <- switch (long "haskell" <> help "Read stdin as Haskell, and format the SQL in its hasql-th quasiquotes (files ending in .hs always are)")
+    extraQuoters <-
+        many
+            ( strOption
+                ( long "quoter"
+                    <> metavar "NAME"
+                    <> help ("Haskell: also format quasiquotes of this quoter, besides " <> T.unpack (T.intercalate ", " defaultQuoters))
+                )
+            )
     files <- many (strArgument (metavar "FILE..." <> help "Files to format in place; none, or -, reads stdin and writes stdout"))
-    pure Cli{check, verbose, options = Options{backend, dialect, keywordCase, pretty = PrettyOptions{indentSize, maxLineLength}}, files}
+    pure
+        Cli
+            { check
+            , verbose
+            , options = Options{backend, dialect, keywordCase, pretty = PrettyOptions{indentSize, maxLineLength}}
+            , haskell
+            , quoters = defaultQuoters <> extraQuoters
+            , files
+            }
 
 
 parseBackend :: String -> Either String Backend
@@ -87,7 +107,7 @@ data Status = Clean | Changed | Broken
 
 main :: IO ()
 main = do
-    args <- execParser (info (cli <**> helper) (fullDesc <> progDesc "Format PostgreSQL files"))
+    args <- execParser (info (cli <**> helper) (fullDesc <> progDesc "Format PostgreSQL files, and the SQL in Haskell files' hasql-th quasiquotes"))
     statuses <- case args.files of
         [] -> pure <$> run args "-"
         fs -> forM fs (run args)
@@ -102,7 +122,10 @@ main = do
 run :: Cli -> FilePath -> IO Status
 run args path = do
     input <- if path == "-" then TIO.getContents else TIO.readFile path
-    result <- formatFile args.options input
+    result <-
+        if isHaskell
+            then pure (Right (formatHaskell args.quoters input))
+            else formatFile args.options input
     case result of
         Left err -> do
             say (label <> ": not valid SQL" <> position err <> ": " <> err.message)
@@ -126,6 +149,7 @@ run args path = do
                     | changed -> Changed
                     | otherwise -> Clean
   where
+    isHaskell = if path == "-" then args.haskell else ".hs" `T.isSuffixOf` T.pack path
     label = T.pack (if path == "-" then "<stdin>" else path)
     position err = if err.cursor > 0 then " at byte " <> T.pack (show err.cursor) else ""
     report :: Text -> StatementReport -> IO ()

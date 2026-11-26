@@ -96,6 +96,7 @@
           checks = project.pgfmt.checks // {
             render-kronor = kronor.pgfmt.checks.render;
             file-kronor = kronor.pgfmt.checks.file;
+            haskell-kronor = kronor.pgfmt.checks.haskell;
           };
         };
 

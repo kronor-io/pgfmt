@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+* Formats the SQL in Haskell files' hasql-th quasiquotes: files ending in
+  `.hs`, or stdin with `--haskell`. Comments, strings and character literals
+  are skipped as GHC does; each quasiquote's SQL is replaced only if it parses
+  back to the same postgresql-syntax AST, and the file must keep the same
+  quasiquotes and the same text around them. `--quoter NAME` adds a quoter to
+  hasql-th's. On Kronor's code it matches `hasql-th-format`, and also formats
+  qualified quoters (`[TH.singletonStatement|`), which that tool skips.
+* Builds against Hackage's postgresql-syntax. The hasql-th dialect is upstream
+  hasql-th's; the `kronor-syntax` flag (`cabal.project.kronor`, or the flake's
+  `pgfmt-kronor`) adds the Haskell targets and param fields of Kronor's fork.
+
 ## 0.1.0.1
 
 * Static Linux binaries for x86_64 and aarch64 on each GitHub release, with

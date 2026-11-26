@@ -15,13 +15,14 @@ module PgFmt.Render (
     formatStatement,
     renderIdentifiersMasked,
     formatSql,
+    formatQuasiQuote,
 )
 where
 
 import Data.Char (toLower)
 import Data.Generics (everywhere, mkT)
 import Data.List.NonEmpty qualified as NE
-import Data.Maybe (catMaybes)
+import Data.Maybe (catMaybes, fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import PostgresqlSyntax qualified as Ast
@@ -147,13 +148,23 @@ renderIdentifiersMasked dialect sql =
 -- not considered an error — they round-trip as @Right input@ since the
 -- formatter never tried to rewrite them.
 formatSql :: Int -> Text -> Either Text Text
-formatSql qqIndent sql
-    | T.null (T.strip sql) = Right sql
+formatSql qqIndent sql = case formatQuasiQuote qqIndent sql of
+    Right formatted -> Right (fromMaybe sql formatted)
+    Left (Unsupported _) -> Right sql
+    Left (RendererBug reason) -> Left reason
+
+
+-- | 'formatSql', saying why a quasiquote is left as it is: 'Right' 'Nothing'
+-- for an empty or single-line one, which are never rewritten, and
+-- 'Unsupported' for SQL postgresql-syntax does not parse.
+formatQuasiQuote :: Int -> Text -> Either FormatError (Maybe Text)
+formatQuasiQuote qqIndent sql
+    | T.null (T.strip sql) = Right Nothing
     -- Single-line queries (no newlines) are left untouched.
-    | not (T.isInfixOf "\n" sql) = Right sql
+    | not (T.isInfixOf "\n" sql) = Right Nothing
     | otherwise =
         case parseStmt HasqlTh (T.strip sql) of
-            Left _ -> Right sql
+            Left err -> Left (Unsupported err)
             Right ast ->
                 let doc :: Doc ()
                     doc = renderPreparableStmt ast
@@ -161,9 +172,10 @@ formatSql qqIndent sql
                     qqIndentText = T.replicate qqIndent " "
                     formatted = "\n" <> body <> "\n" <> qqIndentText
                  in case roundTrip HasqlTh ast formatted of
-                        Right _ -> Right formatted
-                        Left (RendererBug reason) -> Left reason
-                        Left (Unsupported reason) -> Left reason
+                        Right _ -> Right (Just formatted)
+                        -- The output not parsing at all is a renderer bug too.
+                        Left (RendererBug reason) -> Left (RendererBug reason)
+                        Left (Unsupported reason) -> Left (RendererBug reason)
 
 
 -- | Round-trip safety: compare the re-parsed AST to the original. Parse-only
