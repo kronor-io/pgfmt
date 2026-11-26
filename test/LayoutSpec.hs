@@ -107,13 +107,34 @@ expected =
     , (True, "select 1 -- one\nunion all select 2", "SELECT 1 -- one\nUNION ALL\nSELECT 2")
     , -- A blank line before a comment is kept.
       (False, "select f(a, -- one\n\n  -- two\n  b)", "select f(\n      a -- one\n\n      -- two\n    , b\n)")
+    , -- create table: one element per line, trailing commas, the source's
+      -- own keywords; types with no space before their modifiers.
+      (False, "CREATE TEMPORARY TABLE IF NOT EXISTS s.t (id bigint NOT NULL GENERATED ALWAYS AS IDENTITY (START WITH 1 CACHE 10), price numeric (10,2) DEFAULT 0, ref text references u (id) on delete no action, PRIMARY KEY (id)) ON COMMIT DROP", "create temporary table if not exists s.t (\n    id bigint not null generated always as identity (start with 1 cache 10),\n    price numeric(10, 2) default 0,\n    ref text references u(id) on delete no action,\n    primary key (id)\n) on commit drop")
+    , (True, "create table t (a int not null, constraint a_positive check (a > 0)) partition by range (a)", "CREATE TABLE t (\n    a INT NOT NULL,\n    CONSTRAINT a_positive CHECK (a > 0)\n) PARTITION BY RANGE (a)")
+    , (False, "create table t (like u including defaults)", "create table t (\n    like u including defaults\n)")
+    , (False, "create table t ()", "create table t ()")
+    , -- A long check breaks at its top-level ands (or ors); a long foreign
+      -- key before references.
+      (False, "create table t (a text, b text, constraint some_check check (char_length(a) <= 100 and trim(both ' ' from a) <> '' and b is not null and b <> 'none'), constraint fk_t_long foreign key (a, b) references some_schema.other_table(a, b) on delete cascade)", "create table t (\n    a text,\n    b text,\n    constraint some_check check (\n        char_length(a) <= 100\n        and trim(both ' ' from a) <> ''\n        and b is not null\n        and b <> 'none'\n    ),\n    constraint fk_t_long foreign key (a, b)\n        references some_schema.other_table(a, b) on delete cascade\n)")
+    , (False, "create table t (total int generated always as (a + b) stored, d date default current_date unique deferrable initially deferred)", "create table t (\n    total int generated always as (a + b) stored,\n    d date default current_date unique deferrable initially deferred\n)")
+    , -- Comments and blank lines between columns are kept; a comment
+      -- between a constraint's name and its body puts the body under it.
+      (False, "create table t ( -- the table\n  a int, -- the a\n\n  -- the b\n  b int,\n  constraint b_check\n    -- b is small\n    check (b < 10)\n  -- the end\n)", "create table t ( -- the table\n    a int, -- the a\n\n    -- the b\n    b int,\n    constraint b_check\n        -- b is small\n        check (b < 10)\n    -- the end\n)")
+    , -- create view and create ... as: the query laid out under the head.
+      (False, "create or replace view v (x, y) as select a, b from t where c with local check option", "create or replace view v (x, y) as\nselect\n    a\n  , b\nfrom t\nwhere c\nwith local check option")
+    , (True, "create materialized view m as select a from t with no data", "CREATE MATERIALIZED VIEW m AS\nSELECT a\nFROM t\nWITH NO DATA")
+    , (False, "create temp table t on commit drop as select 1", "create temp table t on commit drop as\nselect 1")
     ]
 
 
 -- | Statements the renderer leaves to the caller.
 refused :: [Text]
 refused =
-    [ "create table t (a int)"
+    [ "create index i on t (a)"
+    , "create table t (a int, exclude using gist (a with =))"
+    , "create table t (a int) with (fillfactor = 70)"
+    , "create table p partition of t for values from (1) to (2)"
+    , "create recursive view v (n) as select 1 union all select n + 1 from v"
     , "select x from t where a similar to 'b'"
     , "select 1; select 2"
     , -- No line break where the comment is.

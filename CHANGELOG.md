@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+* The `syntax` backend lays out `create table`, `create view`, `create
+  materialized view` and `create table ... as`, which went to `libpg-query`
+  before. A table has one column or constraint per line with the comma at
+  the end; it keeps the source's keywords, blank lines and comments between
+  columns, writes types as `numeric(12, 2)` and references as `t(id)`, and
+  breaks long checks at their top-level `and`s or `or`s and long foreign keys
+  before `references`. A view's query is laid out like any `select`. Tables
+  with `exclude`, storage options, `partition of` and the like still go to
+  `libpg-query`. On Kronor's migrations this lays out 1,274 more statements,
+  changing about 1,070 files; none fails the parse-tree check, and
+  formatting again changes nothing.
+
 * `values` rows go on one line each, `(1, 'a'),`, when every row of the list
   fits in 100 characters and none has a comment inside it; otherwise each
   row's values still go one per line. Lookup-table inserts now read as a

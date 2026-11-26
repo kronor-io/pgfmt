@@ -129,7 +129,7 @@ where o.status = 'paid';
 -- Refunds need a positive amount.
 create table refunds (
     id bigint generated always as identity primary key,
-    order_id bigint not null references orders (id),
+    order_id bigint not null references orders(id),
     amount numeric(12, 2) not null check (amount > 0),
     created_at timestamptz not null default now()
 );
@@ -214,8 +214,9 @@ WHERE value > 3;
 
 Two backends lay statements out, and they have different styles:
 
-- `syntax`: pgfmt's own renderer. It puts commas at the start of lines, and
-  it handles `select`, `insert`, `update`, `delete` and `values`. It lays
+- `syntax`: pgfmt's own renderer. It handles `select`, `insert`, `update`,
+  `delete` and `values`, with commas at the start of lines, and `create
+  table` and `create view` (see below). It lays
   statements out from PostgreSQL's own parse tree (libpg_query's), keeping
   what the tree forgets from the source: redundant parentheses, `!=`, `as`
   before an alias, `inner join`, how a type is spelled, and comments. A
@@ -259,7 +260,39 @@ where o.status = 'paid';
 The `libpg-query` backend also takes `--indent N` (spaces per level,
 default 4) and `--width N` (the line length it wraps lists at, default 80).
 
-DDL always goes to `libpg-query`:
+`create table` goes to `syntax` too, one column or constraint per line with
+the comma at the end, as tables are usually written. It keeps the source's
+own words (`temp` or `temporary`, an explicit `on delete no action`), blank
+lines and comments between columns, and breaks a long `check` at its
+top-level `and`s and a long foreign key before `references`:
+
+```sql
+create table refunds (
+    id bigint generated always as identity primary key,
+    order_id bigint not null references orders(id),
+
+    -- Never more than the order's total.
+    amount numeric(12, 2) not null,
+    constraint fk_refund_order_line foreign key (order_id, line_id)
+        references order_lines(order_id, id) on delete cascade,
+    constraint amount_positive check (amount > 0)
+);
+```
+
+`create view`, `create materialized view` and `create table ... as` put the
+query on the lines after their head, laid out as a statement of its own:
+
+```sql
+create view paid_orders as
+select
+    o.id
+  , o.total
+from orders o
+where o.status = 'paid';
+```
+
+Any other DDL goes to `libpg-query`, as does a table with something
+`syntax` does not handle (`exclude`, storage options, `partition of`):
 
 ```sql
 alter table orders
