@@ -833,8 +833,53 @@ createFunction statement f = do
         (tableCols, args) = (filter isTable params, filter (not . isTable) params)
     argDs <- paramList args (open + 1) close
     end <- (+ 1) <$> lastTok
-    -- The clauses, in source order: @returns@ (right after the arguments,
-    -- if there), then each option.
+    parts <- functionParts f close end
+    returnsLine <- case parts.returnsEnd of
+        Nothing -> pure mempty
+        Just returnsEnd -> do
+            d <- returnsClause f tableCols (close + 1) returnsEnd
+            (<> d) <$> brk mempty (close + 1)
+    beforeDs <- forM parts.before \c -> do
+        d <- looseRun c.start c.end
+        b <- brk mempty c.start
+        pure (b <> d)
+    argsD <- itemList functionHeaderThreshold (header <+> name) argDs close
+    let clauseLines = returnsLine <> mconcat beforeDs
+    bodyD <- case parts.body of
+        StandardBody at b -> do
+            bb <- brk mempty at
+            d <- standardBody statement b at end
+            pure (bb <> d)
+        QuotedBody at -> quotedBody at parts.asEnd parts.after
+    pure (header <+> name <> argsD <> nest indentSize clauseLines <> bodyD)
+  where
+    firstName j = do
+        t <- tokM j
+        case t of
+            Just tk | tk.kind == Pg.IDENT || (tk.isKeyword && T.toLower tk.text `notElem` ["create", "or", "replace", "function", "procedure"]) -> pure j
+            Just _ -> firstName (j + 1)
+            Nothing -> unsupported "a function pgfmt cannot read"
+
+
+-- | Where the parts of a function after its arguments are.
+data FunctionParts = FunctionParts
+    { returnsEnd :: Maybe Int
+    -- ^ With @returns@ right after the arguments, the token after it.
+    , body :: FunctionBody
+    , before :: [Clause]
+    -- ^ The clauses before the body.
+    , after :: [Clause]
+    -- ^ The clauses after a quoted body.
+    , asEnd :: Int
+    -- ^ The token after @as@'s clause, the quoted body.
+    }
+
+
+-- | Find the clauses of a function whose arguments close at @close@ and
+-- which ends before @end@: @returns@ (right after the arguments, if
+-- there), then each option, in source order, and the body.
+functionParts :: Pg.CreateFunctionStmt -> Int -> Int -> R FunctionParts
+functionParts f close end = do
     opts <- forM (f ^. Pg.options) \o -> case node o of
         Just (Pg.Node'DefElem de) -> (de,) <$> tokAt (fromIntegral (de ^. Pg.location))
         _ -> unsupported "a function option pgfmt cannot read"
@@ -843,12 +888,12 @@ createFunction statement f = do
         Nothing -> pure Nothing
     let optStarts = map snd opts
         firstOpt = foldr min (fromMaybe end standardAt) optStarts
-    returnsD <-
+    returnsEnd <-
         if close + 1 < firstOpt
             then do
                 isReturns <- tokIs (close + 1) "returns"
                 unless isReturns (unsupported "a function pgfmt cannot read")
-                Just <$> returnsClause f tableCols (close + 1) firstOpt
+                pure (Just firstOpt)
             else pure Nothing
     -- Where the body starts: @as@, or a SQL-standard body after every
     -- clause.
@@ -864,32 +909,14 @@ createFunction statement f = do
             StandardBody{} -> map (min bodyAt) (drop 1 optStarts ++ [end])
             QuotedBody{} -> drop 1 optStarts ++ [end]
         clauses = zipWith Clause optStarts ends
-        before = [c | c <- clauses, c.start < bodyAt]
-        after = [c | c <- clauses, c.start > bodyAt]
-        asEnd = fromMaybe end (listToMaybe [c.end | c <- clauses, c.start == bodyAt])
-    beforeDs <- forM before \c -> do
-        d <- looseRun c.start c.end
-        b <- brk mempty c.start
-        pure (b <> d)
-    returnsLine <- case returnsD of
-        Nothing -> pure mempty
-        Just d -> (<> d) <$> brk mempty (close + 1)
-    argsD <- itemList functionHeaderThreshold (header <+> name) argDs close
-    let clauseLines = returnsLine <> mconcat beforeDs
-    bodyD <- case body of
-        StandardBody at b -> do
-            bb <- brk mempty at
-            d <- standardBody statement b at end
-            pure (bb <> d)
-        QuotedBody at -> quotedBody at asEnd after
-    pure (header <+> name <> argsD <> nest indentSize clauseLines <> bodyD)
-  where
-    firstName j = do
-        t <- tokM j
-        case t of
-            Just tk | tk.kind == Pg.IDENT || (tk.isKeyword && T.toLower tk.text `notElem` ["create", "or", "replace", "function", "procedure"]) -> pure j
-            Just _ -> firstName (j + 1)
-            Nothing -> unsupported "a function pgfmt cannot read"
+    pure
+        FunctionParts
+            { returnsEnd
+            , body
+            , before = [c | c <- clauses, c.start < bodyAt]
+            , after = [c | c <- clauses, c.start > bodyAt]
+            , asEnd = fromMaybe end (listToMaybe [c.end | c <- clauses, c.start == bodyAt])
+            }
 
 
 -- | Where a function's body is: in quotes after @as@ at this token, or a
