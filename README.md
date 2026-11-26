@@ -37,7 +37,21 @@ pgfmt is one of the tools Kronor uses to keep a PostgreSQL schema in sqitch, wit
 
 ## Install
 
-pgfmt is a single binary. The easiest way to get it is
+pgfmt is a single binary.
+
+On Linux, each [release](https://github.com/kronor-io/pgfmt/releases) has a
+static binary for `x86_64` and `aarch64` that runs on any distribution. Unpack
+it into `~/.local` (or `/usr/local`) to get `bin/pgfmt` and its bash, zsh and
+fish completions:
+
+```bash
+curl -fsSL "https://github.com/kronor-io/pgfmt/releases/latest/download/pgfmt-$(uname -m)-linux.tar.xz" \
+  | tar -xJ -C ~/.local
+```
+
+`SHA256SUMS` on the release has the tarballs' checksums.
+
+Elsewhere, and for development, the easiest way to get it is
 [Nix](https://nixos.org/download) with flakes enabled. CI pushes every build to
 the `kronor-open.cachix.org` binary cache, and the flake offers to use it:
 answer yes, or pass `--accept-flake-config`, and Nix downloads pgfmt instead of
@@ -70,8 +84,7 @@ Or add it to a flake's dev shell:
 ```
 
 It builds for `x86_64-linux`, `aarch64-linux` and `aarch64-darwin`. To build
-without Nix, see [Building from source](#building-from-source). There are no
-release tarballs yet.
+without Nix, see [Building from source](#building-from-source).
 
 ## Usage
 
@@ -338,6 +351,10 @@ Without it, libpg_query writes a `set` value that is not a plain lowercase
 word as a quoted identifier: `set lock_timeout to '50ms'` comes out as
 `set lock_timeout to "50ms"`. PostgreSQL reads both the same way, but the
 patched library keeps the string.
+
+The release binaries come from `scripts/build-static`, which builds the
+patched libpg_query and pgfmt in a ghc-musl container with Docker and writes
+`dist-static/pgfmt-<arch>-linux.tar.xz`.
 
 With cabal (GHC 9.12), build libpg_query 18 with that patch
 (`patch -p1 < /path/to/pgfmt/nix/libpg_query-set-values-as-strings.patch` in
