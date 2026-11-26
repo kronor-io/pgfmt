@@ -18,14 +18,16 @@ import Prelude
 parseAst :: Text -> Maybe Ast.PreparableStmt
 parseAst t = either (const Nothing) Just (Ast.parse settings (T.strip t))
   where
-    settings =
-        mconcat
-            [ Ast.nullabilityMarkers True
+    settings = Ast.nullabilityMarkers True <> kronorSettings
+
+
+-- | Kronor's extensions to hasql-th's syntax, in a build with them.
+kronorSettings :: Ast.Settings
 #ifdef KRONOR_SYNTAX
-            , Ast.haskellTargets True
-            , Ast.haskellParamFields True
+kronorSettings = Ast.haskellTargets True <> Ast.haskellParamFields True
+#else
+kronorSettings = mempty
 #endif
-            ]
 
 
 -- | The fixtures this build can parse: all of them with the @kronor-syntax@

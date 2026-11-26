@@ -202,14 +202,16 @@ settings = settingsFor HasqlTh
 settingsFor :: Dialect -> Ast.Settings
 settingsFor = \case
     PlainSql -> mempty
-    HasqlTh ->
-        mconcat
-            [ Ast.nullabilityMarkers True
+    HasqlTh -> Ast.nullabilityMarkers True <> kronorSettings
+
+
+-- | Kronor's extensions to hasql-th's syntax, in a build with them.
+kronorSettings :: Ast.Settings
 #ifdef KRONOR_SYNTAX
-            , Ast.haskellTargets True
-            , Ast.haskellParamFields True
+kronorSettings = Ast.haskellTargets True <> Ast.haskellParamFields True
+#else
+kronorSettings = mempty
 #endif
-            ]
 
 
 -- | Parse a statement in the given dialect.
@@ -409,16 +411,25 @@ renderIndirection = mconcat . map renderIndirectionEl . toL
 
 
 renderIndirectionEl :: Ast.IndirectionEl -> Doc ann
+#ifdef KRONOR_SYNTAX
 renderIndirectionEl = \case
     Ast.AttrNameIndirectionEl ident -> "." <> renderIdent ident
     Ast.AllIndirectionEl -> ".*"
     Ast.ExprIndirectionEl expr -> "[" <> renderExpr expr <> "]"
-    Ast.SliceIndirectionEl mFrom mTo ->
-        "[" <> maybe mempty renderExpr mFrom <> ":" <> maybe mempty renderExpr mTo <> "]"
-#ifdef KRONOR_SYNTAX
+    Ast.SliceIndirectionEl mFrom mTo -> renderSlice mFrom mTo
     -- Kronor extension: a Haskell field selector on a @$n@ placeholder.
     Ast.HsAttrNameIndirectionEl t -> ".$" <> pretty t
+#else
+renderIndirectionEl = \case
+    Ast.AttrNameIndirectionEl ident -> "." <> renderIdent ident
+    Ast.AllIndirectionEl -> ".*"
+    Ast.ExprIndirectionEl expr -> "[" <> renderExpr expr <> "]"
+    Ast.SliceIndirectionEl mFrom mTo -> renderSlice mFrom mTo
 #endif
+
+
+renderSlice :: Maybe Ast.AExpr -> Maybe Ast.AExpr -> Doc ann
+renderSlice mFrom mTo = "[" <> maybe mempty renderExpr mFrom <> ":" <> maybe mempty renderExpr mTo <> "]"
 
 
 renderIdent :: Ast.Ident -> Doc ann
@@ -1311,14 +1322,21 @@ renderFromClauseInline fromList =
     "from " <> commaJoin (map renderTableRefInline (toL fromList))
 
 
+-- | A plain select's targets, each on one line: hasql-th's, with Kronor's
+-- extensions, in a build with them.
+#ifdef KRONOR_SYNTAX
+normalTargetsInline :: Ast.HsTargetList -> [Doc ann]
+normalTargetsInline tl = map renderHsTargetElInline (toL tl)
+#else
+normalTargetsInline :: Ast.TargetList -> [Doc ann]
+normalTargetsInline tl = map renderTargetEl (toL tl)
+#endif
+
+
 renderTargetingInline :: Maybe Ast.Targeting -> Doc ann
 renderTargetingInline = \case
     Nothing -> "select"
-#ifdef KRONOR_SYNTAX
-    Just (Ast.NormalTargeting tl) -> "select " <> commaJoin (map renderHsTargetElInline (toL tl))
-#else
-    Just (Ast.NormalTargeting tl) -> "select " <> commaJoin (map renderTargetEl (toL tl))
-#endif
+    Just (Ast.NormalTargeting tl) -> "select " <> commaJoin (normalTargetsInline tl)
     Just (Ast.AllTargeting Nothing) -> "select all"
     Just (Ast.AllTargeting (Just tl)) -> "select all " <> commaJoin (map renderTargetEl (toL tl))
     Just (Ast.DistinctTargeting mExprs tl) ->
@@ -1419,15 +1437,22 @@ renderSimpleSelect = \case
             ]
 
 
+-- | A plain select's target list after @prefix@: hasql-th's, with Kronor's
+-- extensions, in a build with them.
+#ifdef KRONOR_SYNTAX
+renderNormalTargets :: Doc ann -> Ast.HsTargetList -> Doc ann
+renderNormalTargets = renderHsTargetList
+#else
+renderNormalTargets :: Doc ann -> Ast.TargetList -> Doc ann
+renderNormalTargets = renderSqlTargetList
+#endif
+
+
 -- | Render the SELECT targeting (column list).
 renderTargeting :: Maybe Ast.Targeting -> Doc ann
 renderTargeting = \case
     Nothing -> "select"
-#ifdef KRONOR_SYNTAX
-    Just (Ast.NormalTargeting tl) -> renderHsTargetList "select" tl
-#else
-    Just (Ast.NormalTargeting tl) -> renderSqlTargetList "select" tl
-#endif
+    Just (Ast.NormalTargeting tl) -> renderNormalTargets "select" tl
     Just (Ast.AllTargeting Nothing) -> "select all"
     Just (Ast.AllTargeting (Just tl)) -> renderSqlTargetList "select all" tl
     Just (Ast.DistinctTargeting mExprs tl) ->
