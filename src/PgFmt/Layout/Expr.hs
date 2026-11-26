@@ -1171,7 +1171,7 @@ funcAppArgCount f
 -- every other one from the first a string literal.
 looksLikeKeyValuePairs :: E -> [Pg.Node] -> R Bool
 looksLikeKeyValuePairs e args
-    | n < 4 || odd n = pure False
+    | n < keyValueMinArguments || odd n = pure False
     | otherwise = allM key [a | (i, a) <- zip [0 :: Int ..] args, even i]
   where
     n = length args
@@ -1199,6 +1199,12 @@ hasPairShapedCall e = do
                 Normal _ args _ -> looksLikeKeyValuePairs fe args
                 _ -> pure False
         Nothing -> pure False
+
+
+-- | "PgFmt.Render"'s: the fewest arguments a call laid out as key/value
+-- pairs has.
+keyValueMinArguments :: Int
+keyValueMinArguments = 4
 
 
 inlineLengthThreshold, selectTargetInlineThreshold, subqueryInlineThreshold, funcWrapThreshold :: Int

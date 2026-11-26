@@ -709,6 +709,13 @@ valuesClause s = do
 
 
 -- | The longest @values@ row that goes on one line.
+-- | "PgFmt.Render"'s: the most columns a function alias or an insert keeps
+-- on one line.
+funcAliasInlineColumns, insertInlineColumns :: Int
+funcAliasInlineColumns = 3
+insertInlineColumns = 3
+
+
 valuesRowInlineThreshold :: Int
 valuesRowInlineThreshold = 100
 
@@ -1024,7 +1031,7 @@ alias (Just a) i = do
 funcAlias :: Maybe Pg.Alias -> Int -> R D
 funcAlias Nothing _ = pure mempty
 funcAlias (Just a) i
-    | length (a ^. Pg.colnames) > 3 = do
+    | length (a ^. Pg.colnames) > funcAliasInlineColumns = do
         hasAs <- tokIs i "as"
         let nameTok = if hasAs then i + 1 else i
         name <- ident (a ^. Pg.aliasname)
@@ -1427,7 +1434,7 @@ insertColumns cols = do
             indent indentSize <$> bracketListAt ((,close) <$> firsts) ds
         else
             pure
-                if length ds <= 3
+                if length ds <= insertInlineColumns
                     then indent indentSize ("(" <> commaJoin ds <> ")")
                     else indent indentSize (bracketList ds)
 
