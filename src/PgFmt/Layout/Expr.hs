@@ -1066,11 +1066,11 @@ asFuncApp e
 
 -- | postgresql-syntax's @func_expr_common_subexpr@ forms.
 data Subexpr
-    = SubCoalesce [Pg.Node]
-    | SubGreatest [Pg.Node]
-    | SubLeast [Pg.Node]
-    | SubNullIf Pg.Node Pg.Node
-    | SubCast Pg.Node Pg.TypeName
+    = -- | @coalesce@, @greatest@, @least@ or @nullif@: its keyword, its
+      -- location, and its arguments.
+      SubRows Text Int32 [Pg.Node]
+    | -- | @cast(x as t)@: its location, the expression and the type.
+      SubCast Int32 Pg.Node Pg.TypeName
     | -- | @extract@, @position@, @substring@, @trim@, @overlay@.
       SubSyntax
     | -- | @current_date@ and the like.
@@ -1081,19 +1081,19 @@ asSubexpr :: E -> R (Maybe Subexpr)
 asSubexpr e
     | e.lv > 0 = pure Nothing
     | otherwise = case node e.en of
-        Just (Pg.Node'CoalesceExpr c) -> pure (Just (SubCoalesce (c ^. Pg.args)))
-        Just (Pg.Node'MinMaxExpr c) -> pure (Just ((if c ^. Pg.op == Pg.IS_GREATEST then SubGreatest else SubLeast) (c ^. Pg.args)))
+        Just (Pg.Node'CoalesceExpr c) -> pure (Just (SubRows "coalesce" (c ^. Pg.location) (c ^. Pg.args)))
+        Just (Pg.Node'MinMaxExpr c) -> pure (Just (SubRows (if c ^. Pg.op == Pg.IS_GREATEST then "greatest" else "least") (c ^. Pg.location) (c ^. Pg.args)))
         Just (Pg.Node'AExpr a)
             | a ^. Pg.kind == Pg.AEXPR_NULLIF
             , Just l <- a ^. Pg.maybe'lexpr
             , Just r <- a ^. Pg.maybe'rexpr ->
-                pure (Just (SubNullIf l r))
+                pure (Just (SubRows "nullif" (a ^. Pg.location) [l, r]))
         Just (Pg.Node'TypeCast tc)
             | Just tn <- tc ^. Pg.maybe'typeName
             , Just arg <- tc ^. Pg.maybe'arg -> do
                 form <- castForm tc
                 pure case form of
-                    CastCall -> Just (SubCast arg tn)
+                    CastCall -> Just (SubCast (tc ^. Pg.location) arg tn)
                     _ -> Nothing
         Just (Pg.Node'FuncCall f) | not (hasExtras f) -> do
             call <- classifyCall f
@@ -1438,12 +1438,14 @@ funcArgMaybeWrap e n = do
 
 subexprWrapped :: E -> Subexpr -> R D
 subexprWrapped e = \case
-    SubCoalesce args -> rows "coalesce" loc args
-    SubGreatest args -> rows "greatest" loc args
-    SubLeast args -> rows "least" loc args
-    SubNullIf l r -> rows "nullif" loc [l, r]
-    SubCast arg tn -> do
-        open <- castLoc >>= nextParen
+    SubRows name at args -> do
+        open <- tokAt (fromIntegral at) >>= nextParen
+        _ <- expectParen open
+        ds <- traverse (child e.en >=> exprMaybeWrap) args
+        k <- kw name
+        pure (k <> "(" <> nest indentSize (argRows ds) <> hardline <> ")")
+    SubCast at arg tn -> do
+        open <- tokAt (fromIntegral at) >>= nextParen
         _ <- expectParen open
         a <- child e.en arg >>= exprMaybeWrap
         t <- typeName tn
@@ -1451,21 +1453,6 @@ subexprWrapped e = \case
         as <- kw "as"
         pure (k <> "(" <> nest indentSize (hardline <> a <+> as <+> t) <> hardline <> ")")
     _ -> expr MR e
-  where
-    loc = case node e.en of
-        Just (Pg.Node'CoalesceExpr x) -> x ^. Pg.location
-        Just (Pg.Node'MinMaxExpr x) -> x ^. Pg.location
-        Just (Pg.Node'AExpr x) -> x ^. Pg.location
-        _ -> -1
-    castLoc = case node e.en of
-        Just (Pg.Node'TypeCast tc) -> tokAt (fromIntegral (tc ^. Pg.location))
-        _ -> unsupported "a cast"
-    rows name at args = do
-        open <- tokAt (fromIntegral at) >>= nextParen
-        _ <- expectParen open
-        ds <- traverse (child e.en >=> exprMaybeWrap) args
-        k <- kw name
-        pure (k <> "(" <> nest indentSize (argRows ds) <> hardline <> ")")
 
 
 arrayWrapped :: E -> Pg.A_ArrayExpr -> R D
