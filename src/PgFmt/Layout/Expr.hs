@@ -880,41 +880,65 @@ windowSpec w = do
 
 frameClause :: Pg.WindowDef -> R (Maybe D)
 frameClause w
-    | opts .&. 1 == 0 = pure Nothing
+    | not (has frameNonDefault) = pure Nothing
     | otherwise = do
-        modeD <- kw if opts .&. 0x4 /= 0 then "rows" else if opts .&. 0x8 /= 0 then "groups" else "range"
-        start' <- bound True
+        modeD <- kw if has frameRows then "rows" else if has frameGroups then "groups" else "range"
+        start' <- bound startBound (w ^. Pg.maybe'startOffset)
         extent <-
-            if opts .&. 0x10 /= 0
+            if has frameBetween
                 then do
-                    end' <- bound False
+                    end' <- bound endBound (w ^. Pg.maybe'endOffset)
                     b <- kw "between"
                     a <- kw "and"
                     pure (b <+> start' <+> a <+> end')
                 else pure start'
         exclusion <-
             if
-                | opts .&. 0x8000 /= 0 -> Just <$> kw "exclude current row"
-                | opts .&. 0x10000 /= 0 -> Just <$> kw "exclude group"
-                | opts .&. 0x20000 /= 0 -> Just <$> kw "exclude ties"
+                | has frameExcludeCurrentRow -> Just <$> kw "exclude current row"
+                | has frameExcludeGroup -> Just <$> kw "exclude group"
+                | has frameExcludeTies -> Just <$> kw "exclude ties"
                 | otherwise -> pure Nothing
         pure (Just (spaceJoin (catMaybes [Just modeD, Just extent, exclusion])))
   where
-    opts = w ^. Pg.frameOptions
-    bound isStart = do
-        let (up, uf, cr, op, of') = if isStart then (0x20, 0x80, 0x200, 0x800, 0x2000) else (0x40, 0x100, 0x400, 0x1000, 0x4000)
-            offset = if isStart then w ^. Pg.maybe'startOffset else w ^. Pg.maybe'endOffset
-        if
-            | opts .&. up /= 0 -> kw "unbounded preceding"
-            | opts .&. uf /= 0 -> kw "unbounded following"
-            | opts .&. cr /= 0 -> kw "current row"
-            | opts .&. op /= 0 -> do
-                o <- maybe (unsupported "a frame offset") (top >=> expr MP) offset
-                (o <+>) <$> kw "preceding"
-            | opts .&. of' /= 0 -> do
-                o <- maybe (unsupported "a frame offset") (top >=> expr MP) offset
-                (o <+>) <$> kw "following"
-            | otherwise -> unsupported "a frame bound"
+    has flag = w ^. Pg.frameOptions .&. flag /= 0
+    bound flags offset
+        | has flags.unboundedPreceding = kw "unbounded preceding"
+        | has flags.unboundedFollowing = kw "unbounded following"
+        | has flags.currentRow = kw "current row"
+        | has flags.offsetPreceding = do
+            o <- maybe (unsupported "a frame offset") (top >=> expr MP) offset
+            (o <+>) <$> kw "preceding"
+        | has flags.offsetFollowing = do
+            o <- maybe (unsupported "a frame offset") (top >=> expr MP) offset
+            (o <+>) <$> kw "following"
+        | otherwise = unsupported "a frame bound"
+
+
+-- | The flags of a window definition's @frameOptions@ that say what its
+-- frame is: PostgreSQL's @FRAMEOPTION_@ constants (nodes/parsenodes.h).
+frameNonDefault, frameRows, frameGroups, frameBetween, frameExcludeCurrentRow, frameExcludeGroup, frameExcludeTies :: Int32
+frameNonDefault = 0x1
+frameRows = 0x4
+frameGroups = 0x8
+frameBetween = 0x10
+frameExcludeCurrentRow = 0x8000
+frameExcludeGroup = 0x10000
+frameExcludeTies = 0x20000
+
+
+-- | The flags that say what one end of a frame is.
+data BoundFlags = BoundFlags
+    { unboundedPreceding :: Int32
+    , unboundedFollowing :: Int32
+    , currentRow :: Int32
+    , offsetPreceding :: Int32
+    , offsetFollowing :: Int32
+    }
+
+
+startBound, endBound :: BoundFlags
+startBound = BoundFlags{unboundedPreceding = 0x20, unboundedFollowing = 0x80, currentRow = 0x200, offsetPreceding = 0x800, offsetFollowing = 0x2000}
+endBound = BoundFlags{unboundedPreceding = 0x40, unboundedFollowing = 0x100, currentRow = 0x400, offsetPreceding = 0x1000, offsetFollowing = 0x4000}
 
 
 ----------------------------------------------------------------------
