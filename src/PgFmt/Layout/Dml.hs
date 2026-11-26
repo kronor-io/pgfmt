@@ -150,7 +150,7 @@ limitAt s = do
 
 
 -- | A set operation's operands, with their parentheses.
-operands :: Pg.SelectStmt -> R (Pg.SelectStmt, Int, Pg.SelectStmt, Int)
+operands :: Pg.SelectStmt -> R (Sel, Sel)
 operands s = do
     l <- req "a set operation" (s ^. Pg.maybe'larg)
     r <- req "a set operation" (s ^. Pg.maybe'rarg)
@@ -158,14 +158,14 @@ operands s = do
     rp <- selectParens 0 r
     let bare x n = n == 0 && (isJust (x ^. Pg.maybe'withClause) || not (null (x ^. Pg.sortClause)) || isJust (x ^. Pg.maybe'limitCount) || isJust (x ^. Pg.maybe'limitOffset) || not (null (x ^. Pg.lockingClause)))
     when (bare l lp || bare r rp) (unsupported "a set operation operand pgfmt cannot read")
-    pure (l, lp, r, rp)
+    pure (Sel{stmt = l, parens = lp}, Sel{stmt = r, parens = rp})
 
 
 -- | @union all@ and the like, as written, and where.
-setOperator :: Pg.SelectStmt -> Pg.SelectStmt -> Int -> R (D, Int)
-setOperator s r rp = do
-    rFirst <- selectFirst r
-    let k = rFirst - rp - 1
+setOperator :: Pg.SelectStmt -> Sel -> R (D, Int)
+setOperator s r = do
+    rFirst <- selectFirst r.stmt
+    let k = rFirst - r.parens - 1
     w <- tokL k
     (opTok, modifier) <-
         if w `elem` ["all", "distinct"] then pure (k - 1, Just w) else pure (k, Nothing)
@@ -183,11 +183,11 @@ setOperator s r rp = do
 selClause :: Pg.SelectStmt -> R D
 selClause s
     | s ^. Pg.op /= Pg.SETOP_NONE = do
-        (l, lp, r, rp) <- operands s
-        ld <- if lp == 0 then selClause l else selWithParens l lp
-        (op, opAt) <- setOperator s r rp
-        rd <- if rp == 0 then selClause r else selWithParens r rp
-        rAt <- attempt (subtract rp <$> selectFirst r)
+        (l, r) <- operands s
+        ld <- if l.parens == 0 then selClause l.stmt else selWithParens l.stmt l.parens
+        (op, opAt) <- setOperator s r
+        rd <- if r.parens == 0 then selClause r.stmt else selWithParens r.stmt r.parens
+        rAt <- attempt (subtract r.parens <$> selectFirst r.stmt)
         linesAt mempty [(Nothing, ld), (Just opAt, op), (rAt, rd)]
     | not (null (s ^. Pg.valuesLists)) = valuesClause s
     | otherwise = do
@@ -377,10 +377,10 @@ selNoParensInline s = do
 selClauseInline :: Pg.SelectStmt -> R D
 selClauseInline s
     | s ^. Pg.op /= Pg.SETOP_NONE = do
-        (l, lp, r, rp) <- operands s
-        ld <- if lp == 0 then selClauseInline l else selInline (Sel l lp)
-        (op, _) <- setOperator s r rp
-        rd <- if rp == 0 then selClauseInline r else selInline (Sel r rp)
+        (l, r) <- operands s
+        ld <- if l.parens == 0 then selClauseInline l.stmt else selInline l
+        (op, _) <- setOperator s r
+        rd <- if r.parens == 0 then selClauseInline r.stmt else selInline r
         pure (ld <+> op <+> rd)
     | not (null (s ^. Pg.valuesLists)) = valuesP s
     | otherwise = do
@@ -428,10 +428,10 @@ selNoParensP s = do
 selClauseP :: Pg.SelectStmt -> R D
 selClauseP s
     | s ^. Pg.op /= Pg.SETOP_NONE = do
-        (l, lp, r, rp) <- operands s
-        ld <- if lp == 0 then selClauseP l else selP (Sel l lp)
-        (op, _) <- setOperator s r rp
-        rd <- if rp == 0 then selClauseP r else selP (Sel r rp)
+        (l, r) <- operands s
+        ld <- if l.parens == 0 then selClauseP l.stmt else selP l
+        (op, _) <- setOperator s r
+        rd <- if r.parens == 0 then selClauseP r.stmt else selP r
         pure (ld <+> op <+> rd)
     | not (null (s ^. Pg.valuesLists)) = valuesP s
     | otherwise = do
