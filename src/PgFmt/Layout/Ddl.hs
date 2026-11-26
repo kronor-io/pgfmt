@@ -13,7 +13,6 @@ import Control.Monad.Reader (asks)
 import Data.ByteString qualified as BS
 import Data.IntMap.Strict qualified as IM
 import Data.IntSet qualified as IS
-import Data.List (zip4)
 import Data.Maybe (catMaybes, fromMaybe, isJust, isNothing, listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -156,24 +155,14 @@ tableBody c head' open = do
                 comma <- tokIs (s - 1) ","
                 unless comma (unsupported "a create table pgfmt cannot read")
     let ends = map (subtract 1) (drop 1 starts) ++ [close]
-        n = length elts
-    lines' <- forM (zip4 [0 :: Int ..] elts starts ends) \(i, el, s, e) -> do
-        d <- tableElement el s e
-        b <- brk mempty s
-        -- A blank line between two elements is kept, as between values rows.
-        blank <- asks (IS.member s . (.blankLineBefore))
-        let gap = if blank && i > 0 then hardline else mempty
-        pure (b <> gap <> d <> (if i < n - 1 then "," else mempty))
-    -- Comments before the closing parenthesis: one sharing the last line
-    -- ends it, one on a line of its own stays one, indented with the rows.
-    cs <- gapBefore close
-    let (trailing, own) = span (not . (.ownLine)) cs
-        endComments =
-            mconcat [" " <> raw x.ctext | x <- trailing]
-                <> mconcat [hardline <> (if x.blankBefore then hardline else mempty) <> raw x.ctext | x <- own]
-        body
-            | n == 0 && null cs = "()"
-            | otherwise = "(" <> nest indentSize (mconcat lines' <> endComments) <> hardline <> ")"
+    ds <- forM (zip3 elts starts ends) \(el, s, e) -> tableElement el s e
+    -- A blank line between two elements is kept, as between values rows.
+    rows <- commaRows KeepBlankLines (zip starts ds)
+    endComments <- closingComments close
+    commented <- not . null <$> gapBefore close
+    let body
+            | null elts && not commented = "()"
+            | otherwise = "(" <> nest indentSize (rows <> endComments) <> hardline <> ")"
     tl <- tableTail c (close + 1)
     pure (head' <+> body <> tl)
 
@@ -678,18 +667,14 @@ alterTable a = do
     starts <- partsBetween afterRel end
     let cmds = a ^. Pg.cmds
         ends = map (subtract 1) (drop 1 starts) ++ [end]
-        n = length cmds
-    unless (length starts == n) (unsupported "an alter table pgfmt cannot read")
-    lines' <- forM (zip4 [0 :: Int ..] cmds starts ends) \(i, c, s, e) -> do
+    unless (length starts == length cmds) (unsupported "an alter table pgfmt cannot read")
+    ds <- forM (zip3 cmds starts ends) \(c, s, e) -> do
         cmd <- case node c of
             Just (Pg.Node'AlterTableCmd x) -> pure x
             _ -> unsupported "an alter table pgfmt cannot read"
-        d <- alterCmd cmd s e
-        b <- brk mempty s
-        blank <- asks (IS.member s . (.blankLineBefore))
-        let gap = if blank && i > 0 then hardline else mempty
-        pure (b <> gap <> d <> (if i < n - 1 then "," else mempty))
-    pure (header <+> rel <> nest indentSize (mconcat lines'))
+        alterCmd cmd s e
+    rows <- commaRows KeepBlankLines (zip starts ds)
+    pure (header <+> rel <> nest indentSize rows)
 
 
 -- | One action of an @alter table@, from token @s@ to before @e@.
@@ -1029,6 +1014,37 @@ paramList ps from close = do
     forM (zip3 ps starts ends) \(p, s, e) -> (s,) <$> param p s e
 
 
+-- | Whether 'commaRows' keeps a blank line the source has between two rows.
+data BlankLines = KeepBlankLines | DropBlankLines
+
+
+-- | Rows, each with the token it starts at: each on a line of its own after
+-- the comments before it, each but the last followed by its comma.
+commaRows :: BlankLines -> [(Int, D)] -> R D
+commaRows blankLines rows = do
+    let n = length rows
+    ls <- forM (zip [0 :: Int ..] rows) \(i, (s, d)) -> do
+        b <- brk mempty s
+        blank <- asks (IS.member s . (.blankLineBefore))
+        let gap = case blankLines of
+                KeepBlankLines | blank && i > 0 -> hardline
+                _ -> mempty
+        pure (b <> gap <> d <> (if i < n - 1 then "," else mempty))
+    pure (mconcat ls)
+
+
+-- | The comments before a list's closing parenthesis: one sharing the last
+-- row's line ends it, one on a line of its own stays one, indented with the
+-- rows.
+closingComments :: Int -> R D
+closingComments close = do
+    cs <- gapBefore close
+    let (trailing, own) = span (not . (.ownLine)) cs
+    pure $
+        mconcat [" " <> raw x.ctext | x <- trailing]
+            <> mconcat [hardline <> (if x.blankBefore then hardline else mempty) <> raw x.ctext | x <- own]
+
+
 -- | A parenthesized list (of parameters, of columns) after @lead@: on one
 -- line if it fits in @width@ and has no comments, otherwise one item per
 -- line with the comma at the end, the comments in their places.
@@ -1036,22 +1052,15 @@ itemList :: Int -> D -> [(Int, D)] -> Int -> R D
 itemList width lead items close = do
     commented <- or <$> mapM (fmap (not . null) . gapBefore) (map fst items ++ [close])
     let inline = "(" <> commaJoin (map snd items) <> ")"
-        n = length items
     if null items && not commented
         then pure "()"
         else
             if not commented && len (lead <> inline) <= width
                 then pure inline
                 else do
-                    ls <- forM (zip [0 :: Int ..] items) \(i, (q, d)) -> do
-                        b <- brk mempty q
-                        pure (b <> d <> (if i < n - 1 then "," else mempty))
-                    cs <- gapBefore close
-                    let (trailing, own) = span (not . (.ownLine)) cs
-                        endComments =
-                            mconcat [" " <> raw x.ctext | x <- trailing]
-                                <> mconcat [hardline <> (if x.blankBefore then hardline else mempty) <> raw x.ctext | x <- own]
-                    pure ("(" <> nest indentSize (mconcat ls <> endComments) <> hardline <> ")")
+                    rows <- commaRows DropBlankLines items
+                    endComments <- closingComments close
+                    pure ("(" <> nest indentSize (rows <> endComments) <> hardline <> ")")
 
 
 -- | One parameter, from token @s@ to before @e@: its mode, name, type and
