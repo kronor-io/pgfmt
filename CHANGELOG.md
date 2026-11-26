@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+* The safety check compares each statement's parse tree, source positions
+  aside, instead of SQL deparsed from it: two different trees the deparser
+  prints alike no longer pass. On Kronor's 4,414 migrations the output is
+  byte for byte the same as before. Error messages now quote the statement as
+  written and as formatted, rather than the deparser's rendering of each.
 * Formats the SQL in Haskell files' hasql-th quasiquotes: files ending in
   `.hs`, or stdin with `--haskell`. Comments, strings and character literals
   are skipped as GHC does; each quasiquote's SQL is replaced only if it parses

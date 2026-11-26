@@ -47,6 +47,26 @@ int pgfmt_parse(const char *sql, char **out, size_t *out_len, int *cursor)
     return rc;
 }
 
+/*
+ * The JSON parse tree of sql. Unlike the protobuf, it tells an empty string
+ * from a missing one (comment on t is '' from comment on t is null).
+ */
+int pgfmt_parse_json(const char *sql, char **out, size_t *out_len, int *cursor)
+{
+    PgQueryParseResult result = pg_query_parse(sql);
+    int rc;
+    if (result.error) {
+        rc = fail(result.error, out, out_len, cursor);
+    } else {
+        *out_len = strlen(result.parse_tree);
+        *out = copy_bytes(result.parse_tree, *out_len);
+        *cursor = 0;
+        rc = 0;
+    }
+    pg_query_free_parse_result(result);
+    return rc;
+}
+
 /* The protobuf token stream of sql, comments included. */
 int pgfmt_scan(const char *sql, char **out, size_t *out_len, int *cursor)
 {

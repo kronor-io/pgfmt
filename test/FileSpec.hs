@@ -27,6 +27,8 @@ data Expected
       Contains [Text]
     | -- | Not valid SQL.
       Invalid
+    | -- | Unchanged, a backend's output refused as a different statement.
+      Refused
 
 
 cases :: [Case]
@@ -172,6 +174,20 @@ cases =
         , expected = Contains [" update t\n set a = 1; update t\n set a = 1;"]
         }
     , Case
+        { name = "libpg-query: IN lists and array literals, whose bracket positions are in the tree, verify"
+        , backend = LibPgQuery
+        , keywordCase = Lower
+        , input = "SELECT a FROM t WHERE x IN (1, 2) AND y = ARRAY[1,2];\n"
+        , expected = Output "select a\nfrom t\nwhere\n    x in (1, 2)\n    and y = array[1, 2];\n"
+        }
+    , Case
+        { name = "libpg-query: a quoted parameter name it would unquote is refused"
+        , backend = LibPgQuery
+        , keywordCase = Lower
+        , input = "create function f(\"startDate\" date) returns int language sql as 'select 1';\n"
+        , expected = Refused
+        }
+    , Case
         { name = "not SQL"
         , backend = Auto
         , keywordCase = Lower
@@ -201,6 +217,10 @@ runCase failWith c = do
         (Invalid, Left _) -> pure ()
         (Invalid, Right r) -> failWith c.name ("expected a parse error, got:\n" <> r.output)
         (_, Left err) -> failWith c.name ("parse error: " <> T.pack (show err))
+        (Refused, Right r) -> do
+            unless (r.output == c.input) $ failWith c.name ("changed:\n" <> r.output)
+            unless (any (isFailed . (.outcome)) r.reports) $
+                failWith c.name ("reports: " <> T.pack (show r.reports))
         (Unchanged reason, Right r) -> do
             unless (r.output == c.input) $ failWith c.name ("changed:\n" <> r.output)
             unless (all ((== Kept reason) . (.outcome)) r.reports) $

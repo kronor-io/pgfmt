@@ -33,8 +33,7 @@ import Data.Maybe (mapMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
-import Data.ProtoLens (defMessage)
-import Lens.Micro (over, (&), (.~), (^.))
+import Lens.Micro ((^.))
 import PgFmt.LibPgQuery (Token (..))
 import PgFmt.LibPgQuery qualified as LibPgQuery
 import PgQuery qualified as Pg
@@ -89,7 +88,7 @@ formatBodies layOut stmt raw = case functionBody raw of
                                         newStmt = BS.take bodyStart stmt <> newBody <> BS.drop bodyEnd stmt
                                     checks <-
                                         sequence
-                                            [ sameOutsideBody raw bodyText newStmt
+                                            [ sameOutsideBody stmt newStmt
                                             , samePlpgsql stmt newStmt
                                             , sameComments body newBody
                                             ]
@@ -130,17 +129,6 @@ functionBody raw = do
         _ -> []
 
 
--- | Replace the body of a @CREATE FUNCTION@.
-setFunctionBody :: Text -> Pg.RawStmt -> Pg.RawStmt
-setFunctionBody body = over (Pg.stmt . Pg.createFunctionStmt . Pg.options . traverse) replace
-  where
-    replace o = case o ^. Pg.maybe'defElem of
-        Just d
-            | d ^. Pg.defname == "as" ->
-                o & Pg.defElem . Pg.arg . Pg.list . Pg.items .~ [defMessage & Pg.string . Pg.sval .~ body]
-        _ -> o
-
-
 -- | The byte range of the function body: the inside of the one dollar-quoted
 -- string of the statement whose contents are exactly the body. A body in
 -- single quotes, or a dollar-quoted argument default or @SET@ value spelled
@@ -170,18 +158,23 @@ bodyRange stmt body = do
 
 
 -- | 'Nothing' when the new statement is the old one with only its body
--- changed.
-sameOutsideBody :: Pg.RawStmt -> Text -> ByteString -> IO (Maybe Text)
-sameOutsideBody raw oldBody newStmt = do
-    reparsed <- LibPgQuery.parse newStmt
-    case reparsed of
-        Right tree | [newRaw] <- tree ^. Pg.stmts -> do
-            before <- LibPgQuery.canonical raw
-            after <- LibPgQuery.canonical (setFunctionBody oldBody newRaw)
-            pure case (before, after) of
-                (Right b, Right a) | a == b -> Nothing
-                _ -> Just "the statement changed outside its body"
-        _ -> pure (Just "the statement does not parse")
+-- changed: their normal forms match once every @AS@ clause is left out.
+sameOutsideBody :: ByteString -> ByteString -> IO (Maybe Text)
+sameOutsideBody oldStmt newStmt = do
+    before <- LibPgQuery.canonical oldStmt
+    after <- LibPgQuery.canonical newStmt
+    pure case (before, after) of
+        (Right [b], Right [a])
+            | withoutBody a == withoutBody b -> Nothing
+            | otherwise -> Just "the statement changed outside its body"
+        _ -> Just "the statement does not parse"
+  where
+    withoutBody = \case
+        Object o
+            | Just (String "as") <- KeyMap.lookup "defname" o -> Object (KeyMap.delete "arg" o)
+            | otherwise -> Object (KeyMap.map withoutBody o)
+        Array xs -> Array (fmap withoutBody xs)
+        v -> v
 
 
 -- | 'Nothing' when both bodies hold the same comments in the same order.
@@ -289,17 +282,15 @@ normalise = \case
     v -> pure v
   where
     step k v
-        | k == "query", String q <- v = String <$> normalForm q
+        | k == "query", String q <- v = normalForm q
         | otherwise = normalise v
     -- A query that parses as SQL compares by its normal form; anything else
     -- (an expression such as @v > 1@) compares as written.
     normalForm q = do
-        parsed <- LibPgQuery.parse (TE.encodeUtf8 q)
-        case parsed of
-            Right tree | [raw] <- tree ^. Pg.stmts -> do
-                c <- LibPgQuery.canonical raw
-                pure (either (const q) id c)
-            _ -> pure q
+        parsed <- LibPgQuery.canonical (TE.encodeUtf8 q)
+        pure case parsed of
+            Right [tree] -> tree
+            _ -> String q
 
 
 slice :: Int -> Int -> ByteString -> ByteString

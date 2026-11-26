@@ -23,7 +23,12 @@ module PgFmt.LibPgQuery (
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS
 import Data.ByteString.Unsafe (unsafeUseAsCStringLen)
-import Data.ProtoLens (Message, decodeMessage, defMessage, encodeMessage)
+import Data.Aeson (Value (..))
+import Data.Aeson qualified as Aeson
+import Data.Aeson.Key qualified as Key
+import Data.Aeson.KeyMap qualified as KeyMap
+import Data.Foldable (toList)
+import Data.ProtoLens (Message, decodeMessage, encodeMessage)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
@@ -31,7 +36,7 @@ import Data.Text.Encoding.Error qualified as TE
 import Control.Exception (finally, mask_)
 import Foreign (Ptr, alloca, free, nullPtr, peek, poke)
 import Foreign.C (CInt (..), CSize (..), CString)
-import Lens.Micro ((&), (.~), (^.))
+import Lens.Micro ((^.))
 import PgQuery qualified as Pg
 
 
@@ -49,6 +54,10 @@ type Out = Ptr CString -> Ptr CSize -> Ptr CInt -> IO CInt
 
 foreign import ccall safe "pgfmt_parse"
     c_parse :: CString -> Out
+
+
+foreign import ccall safe "pgfmt_parse_json"
+    c_parse_json :: CString -> Out
 
 
 foreign import ccall safe "pgfmt_parse_plpgsql"
@@ -204,19 +213,39 @@ tokens result =
     ]
 
 
--- | A statement's normal form: libpg_query's compact deparse of it alone,
--- with its location stripped. Two statements with the same normal form are
--- the same statement to PostgreSQL, however they are laid out.
-canonical :: Pg.RawStmt -> IO (Either LibPgQueryError Text)
-canonical raw =
-    deparse
-        ( defMessage
-            & Pg.stmts
-                .~ [ raw
-                        & Pg.stmtLocation .~ 0
-                        & Pg.stmtLen .~ 0
-                   ]
-        )
+-- | The normal form of each statement in UTF-8 SQL: its parse tree, from
+-- libpg_query's JSON output, with every source position removed: @location@
+-- and @name_location@, @stmt_location@ and @stmt_len@, and where a list's
+-- brackets are (@list_start@, @list_end@, and @rexpr_list_start@ and
+-- @rexpr_list_end@ for @IN@ lists). Two statements with the same
+-- normal form are the same statement to PostgreSQL, however they are laid out.
+--
+-- This compares trees, not text: two trees the deparser happens to write the
+-- same way still count as different. libpg_query 18 leaves empty strings out
+-- of its trees, so @comment on t is ''@ and @comment on t is null@ are the
+-- same tree to it; PostgreSQL treats them the same too.
+canonical :: ByteString -> IO (Either LibPgQueryError [Value])
+canonical sql = do
+    json <- withSql sql (runOut . c_parse_json)
+    pure do
+        bytes <- json
+        case Aeson.eitherDecodeStrict bytes of
+            Left err -> Left LibPgQueryError{message = "libpg_query's JSON does not decode: " <> T.pack err, cursor = 0}
+            Right v -> Right (statementsOf v)
+  where
+    statementsOf = \case
+        Object o | Just (Array xs) <- KeyMap.lookup "stmts" o -> map withoutPositions (toList xs)
+        _ -> []
+    withoutPositions = \case
+        Object o -> Object (KeyMap.map withoutPositions (KeyMap.filterWithKey (\k _ -> not (isPosition (Key.toText k))) o))
+        Array xs -> Array (fmap withoutPositions xs)
+        v -> v
+    isPosition k =
+        k == "location"
+            || "_location" `T.isSuffixOf` k
+            || k == "stmt_len"
+            || "list_start" `T.isSuffixOf` k
+            || "list_end" `T.isSuffixOf` k
 
 
 decodeUtf8 :: ByteString -> Text

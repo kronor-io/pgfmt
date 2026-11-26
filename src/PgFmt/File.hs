@@ -3,8 +3,8 @@
 -- between statements (whitespace, comments, semicolons) is kept byte for byte.
 --
 -- No statement is rewritten unless libpg_query, PostgreSQL's own parser, reads
--- the result as the same statement: its normal form ('canonical') before and
--- after must match. That check is independent of either backend's own.
+-- the result as the same statement: its parse tree, positions aside
+-- ('canonical'), before and after must match. That check is independent of either backend's own.
 module PgFmt.File (
     Backend (..),
     KeywordCase (..),
@@ -135,19 +135,18 @@ formatFile opts text
                             }
 
 
--- | 'Nothing' when the file parses to statements with these normal forms.
-sameStatements :: [Pg.RawStmt] -> Text -> IO (Maybe Text)
-sameStatements originals output = do
-    reparsed <- LibPgQuery.parse (TE.encodeUtf8 output)
-    case reparsed of
-        Left err -> pure (Just ("does not parse: " <> err.message))
-        Right tree -> do
-            before <- traverse LibPgQuery.canonical originals
-            after <- traverse LibPgQuery.canonical (tree ^. Pg.stmts)
-            pure
-                if sequence before == sequence after
-                    then Nothing
-                    else Just "holds different statements than the original"
+-- | 'Nothing' when the file parses to the statements of these SQL texts, by
+-- normal form.
+sameStatements :: [ByteString] -> Text -> IO (Maybe Text)
+sameStatements expected output = do
+    before <- traverse LibPgQuery.canonical expected
+    after <- LibPgQuery.canonical (TE.encodeUtf8 output)
+    pure case (concat <$> sequence before, after) of
+        (_, Left err) -> Just ("does not parse: " <> err.message)
+        (Left err, _) -> Just ("has a statement that no longer parses on its own: " <> err.message)
+        (Right b, Right a)
+            | a == b -> Nothing
+            | otherwise -> Just "holds different statements than the original"
 
 
 -- | A statement's new text for the byte range it replaces.
@@ -156,7 +155,7 @@ data Replacement = Replacement
     , to :: Int
     , text :: Maybe Text
     , report :: StatementReport
-    , expected :: Pg.RawStmt
+    , expected :: ByteString
     -- ^ The statement the new text must parse to: the original, or the
     -- original with its PL/pgSQL body formatted.
     }
@@ -204,41 +203,43 @@ formatOne opts source toks stmt =
                         , expected
                         }
             if null code
-                then pure (done (Kept "only comments") Nothing stmt.raw)
+                then pure (done (Kept "only comments") Nothing original)
                 else do
                     bodies <- Plpgsql.formatBodies (formatEmbedded opts) body stmt.raw
                     withBody <- case bodies of
                         Left reason -> pure (Left reason)
-                        Right Nothing -> pure (Right (body, stmt.raw, False))
+                        Right Nothing -> pure (Right (body, False))
                         Right (Just body') -> do
                             reparsed <- LibPgQuery.parse body'
                             pure case reparsed of
-                                Right tree | [raw'] <- tree ^. Pg.stmts -> Right (body', raw', True)
+                                Right tree | [_] <- tree ^. Pg.stmts -> Right (body', True)
                                 _ -> Left "the statement with its formatted PL/pgSQL body does not parse"
                     case withBody of
-                        Left reason -> pure (done (Failed reason) Nothing stmt.raw)
-                        Right (code', raw', bodyChanged) -> do
-                            laid <- layOut opts column code' raw'
+                        Left reason -> pure (done (Failed reason) Nothing original)
+                        Right (code', bodyChanged) -> do
+                            laid <- layOut opts column code'
                             pure case laid of
-                                Right (used, formatted) -> done (FormattedBy used) (Just formatted) raw'
+                                Right (used, formatted) -> done (FormattedBy used) (Just formatted) code'
                                 Left outcome@(Kept _)
-                                    | bodyChanged -> done outcome (Just (decode code')) raw'
-                                Left outcome -> done outcome Nothing stmt.raw
+                                    | bodyChanged -> done outcome (Just (decode code')) code'
+                                Left outcome -> done outcome Nothing original
   where
+    -- The statement as written, which an unchanged one must still parse to.
+    original = BS.take (stmt.end - stmt.start) (BS.drop stmt.start source)
     keep a b reason =
         Replacement
             { from = a
             , to = b
             , text = Nothing
             , report = StatementReport{line = 1 + BS.count 10 (BS.take a source), outcome = Kept reason}
-            , expected = stmt.raw
+            , expected = original
             }
 
 
--- | Lay out one statement (no comments before or after it) that parses to
--- @raw@, starting at @column@, and check the result still parses to it.
-layOut :: Options -> Int -> ByteString -> Pg.RawStmt -> IO (Either Outcome (Backend, Text))
-layOut opts column code raw = do
+-- | Lay out one statement (no comments before or after it), starting at
+-- @column@, and check the result still parses to the same statement.
+layOut :: Options -> Int -> ByteString -> IO (Either Outcome (Backend, Text))
+layOut opts column code = do
     scanned <- LibPgQuery.scan code
     let comments = either (const 0) (length . filter (.isComment) . LibPgQuery.tokens) scanned
     attempt <- runBackend opts code (comments > 0)
@@ -250,7 +251,7 @@ layOut opts column code raw = do
                 Left reason -> pure (Left (Failed reason))
                 Right formatted1 -> do
                     formatted <- endLineComment =<< indentContinuation column formatted1
-                    verdict <- verify raw (TE.encodeUtf8 formatted) comments
+                    verdict <- verify code (TE.encodeUtf8 formatted) comments
                     pure case verdict of
                         Nothing -> Right (used, formatted)
                         Just reason -> Left (Failed reason)
@@ -261,8 +262,8 @@ formatEmbedded :: Options -> Int -> ByteString -> IO (Either Text (Maybe Text))
 formatEmbedded opts column query = do
     parsed <- LibPgQuery.parse query
     case parsed of
-        Right tree | [raw] <- tree ^. Pg.stmts -> do
-            laid <- layOut opts column query raw
+        Right tree | [_] <- tree ^. Pg.stmts -> do
+            laid <- layOut opts column query
             pure case laid of
                 Right (_, formatted) -> Right (Just formatted)
                 Left (Failed reason) -> Left reason
@@ -390,28 +391,29 @@ endLineComment formatted = do
 
 -- | 'Nothing' when the formatted SQL is one statement with the original's
 -- normal form and as many comments; otherwise why not.
-verify :: Pg.RawStmt -> ByteString -> Int -> IO (Maybe Text)
+verify :: ByteString -> ByteString -> Int -> IO (Maybe Text)
 verify original formatted commentCount = do
     before <- LibPgQuery.canonical original
-    reparsed <- LibPgQuery.parse formatted
+    after <- LibPgQuery.canonical formatted
     rescanned <- LibPgQuery.scan formatted
-    case (before, reparsed, rescanned) of
-        (Left err, _, _) -> pure (Just ("libpg_query could not deparse the original: " <> err.message))
+    case (before, after, rescanned) of
+        (Left err, _, _) -> pure (Just ("the original does not parse on its own: " <> err.message))
         (_, Left err, _) -> pure (Just ("formatted SQL does not parse: " <> err.message))
         (_, _, Left err) -> pure (Just ("formatted SQL does not scan: " <> err.message))
-        (Right expected, Right tree, Right scanResult) -> case tree ^. Pg.stmts of
-            [raw] -> do
-                after <- LibPgQuery.canonical raw
-                let comments = length (filter (.isComment) (LibPgQuery.tokens scanResult))
-                pure case after of
-                    Left err -> Just ("libpg_query could not deparse the formatted SQL: " <> err.message)
-                    Right actual
-                        | actual /= expected ->
-                            Just ("formatted SQL is a different statement:\n  before: " <> expected <> "\n  after:  " <> actual)
-                        | comments /= commentCount ->
-                            Just ("formatting lost comments: " <> T.pack (show commentCount) <> " before, " <> T.pack (show comments) <> " after")
-                        | otherwise -> Nothing
-            raws -> pure (Just ("formatted SQL is " <> T.pack (show (length raws)) <> " statements"))
+        (Right b, Right a, Right scanResult)
+            | length a /= 1 -> pure (Just ("formatted SQL is " <> T.pack (show (length a)) <> " statements"))
+            | a /= b ->
+                pure . Just $
+                    "formatted SQL is a different statement:\n  before: "
+                        <> oneLine original
+                        <> "\n  after:  "
+                        <> oneLine formatted
+            | comments scanResult /= commentCount ->
+                pure (Just ("formatting lost comments: " <> T.pack (show commentCount) <> " before, " <> T.pack (show (comments scanResult)) <> " after"))
+            | otherwise -> pure Nothing
+  where
+    comments scanResult = length (filter (.isComment) (LibPgQuery.tokens scanResult))
+    oneLine = T.unwords . T.words . decode
 
 
 decode :: ByteString -> Text

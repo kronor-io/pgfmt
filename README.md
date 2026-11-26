@@ -297,10 +297,19 @@ variable of type `myschema.thing` is left alone.
    byte range. Everything between statements is copied through unchanged.
 2. **Format.** A backend lays out each statement.
 3. **Verify.** libpg_query parses the new text. It must be one statement with
-   the same parse tree (compared by its compact deparse) and the same number
-   of comments as the original. This check does not depend on either backend.
-   Finally, the whole new file must parse to the same statements as the old
-   one.
+   the same parse tree, source positions aside, and the same number of
+   comments as the original. The trees themselves are compared, not SQL
+   printed from them, so two trees that print alike still count as different.
+   This check does not depend on either backend. Finally, the whole new file
+   must parse to the same statements as the old one.
+
+   It does catch backend bugs. On Kronor's migrations, libpg_query's
+   pretty-printer drops the quotes from function parameter names
+   (`"startDate" date` comes out as `startDate date`, which PostgreSQL reads as
+   `startdate`); pgfmt refuses those statements, leaves them as they are, and
+   exits 2. One limit: libpg_query 18 leaves empty strings out of its trees, so
+   `comment on t is ''` and `comment on t is null` look the same to it.
+   PostgreSQL treats them the same too.
 
 The check compares meaning, not spelling. libpg_query's backend writes some
 things differently, and those changes pass: `integer` becomes `int`, an index
