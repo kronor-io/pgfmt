@@ -73,6 +73,16 @@ selectParens bound s = do
 selectParens' :: Int -> Pg.SelectStmt -> [Int] -> R Int
 selectParens' bound s ls = do
     f <- selectFirst s
+    placeWrapping bound f ls
+
+
+-- | Place the parentheses around the node with these (non-empty) locations
+-- whose first token is @first@: back from the token before it, down to
+-- @bound@, each opening parenthesis not yet placed whose closing one comes
+-- after the node's last token, while the pair holds nothing but the node.
+-- How many it placed.
+placeWrapping :: Int -> Int -> [Int] -> R Int
+placeWrapping bound first ls = do
     let set = IS.fromList ls
     maxTok <- tokAt (maximum ls)
     let go p n
@@ -89,7 +99,7 @@ selectParens' bound s ls = do
                             cov <- covers p m set
                             if cov then consume p >> go (p - 1) (n + 1) else pure n
                     _ -> pure n
-    go (f - 1) 0
+    go (first - 1) 0
 
 
 -- | The parentheses around a select, not placing them: for finding where
@@ -944,21 +954,8 @@ joinParens' :: Pg.Node -> R Int
 joinParens' n = do
     f <- tableRefFirst n
     ls <- nonEmptyLocs (locsNode n)
-    let set = IS.fromList ls
-    maxTok <- tokAt (maximum ls)
-    let go p k = do
-            isParen <- tokIs p "("
-            placed <- isConsumed p
-            mm <- matchOf p
-            case mm of
-                Just m
-                    | isParen
-                    , not placed
-                    , m > maxTok -> do
-                        cov <- covers p m set
-                        if cov then consume p >> go (p - 1) (k + 1) else pure k
-                _ -> pure k
-    go (f - 1) 0
+    -- Before the first token there is no parenthesis, so 0 bounds nothing.
+    placeWrapping 0 f ls
 
 
 -- | A relation's name.
