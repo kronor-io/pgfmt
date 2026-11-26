@@ -3965,6 +3965,9 @@ statement n = case node n of
     Just (Pg.Node'CreateFunctionStmt f) -> local (\env -> env{tightTypes = True}) (createFunction f)
     Just (Pg.Node'AlterTableStmt a) -> local (\env -> env{tightTypes = True}) (alterTable a)
     Just (Pg.Node'CreateTableAsStmt c) -> createTableAs c
+    Just (Pg.Node'CreateTrigStmt t) -> createTrigger t
+    Just (Pg.Node'GrantStmt _) -> grantStmt True
+    Just (Pg.Node'GrantRoleStmt _) -> grantStmt False
     Just (Pg.Node'CallStmt c) -> do
         f <- req "a call" (c ^. Pg.maybe'funccall)
         e <- top (defMessage `withFuncCall` f)
@@ -4269,7 +4272,7 @@ lastTok = do
         Nothing -> unsupported "an empty statement"
 
 
-data Piece = Word | Open | Glue | Close | Dot
+data Piece = Word | Open | Call | Glue | Close | Dot
 
 
 -- | The tokens from @a@ to before @b@, which must be keywords, numbers, and
@@ -4949,7 +4952,13 @@ looseRun a b = do
             Just tk
                 | tk.text == "(" -> do
                     _ <- expectParen j
-                    pure (Open, "(")
+                    -- Right after a name, as in @f(bigint)@, if the source
+                    -- has it there.
+                    prev <- if j > a then tokM (j - 1) else pure Nothing
+                    let glued = case prev of
+                            Just p -> p.text `notElem` ["(", ")", ","] && p.start + BS.length (TE.encodeUtf8 p.text) == tk.start
+                            Nothing -> False
+                    pure (if glued then Call else Open, "(")
                 | tk.text `elem` [")", ","] -> pure (Close, pretty tk.text)
                 | tk.text == "." -> pure (Dot, ".")
                 | tk.isKeyword && tk.kind /= Pg.IDENT -> (Word,) <$> kw (T.toLower tk.text)
@@ -4962,9 +4971,11 @@ looseRun a b = do
     go _ [] = mempty
     go prev ((k, d) : rest) = sep prev k <> d <> go k rest
     sep Open _ = mempty
+    sep Call _ = mempty
     sep Dot _ = mempty
     sep _ Close = mempty
     sep _ Dot = mempty
+    sep _ Call = mempty
     sep _ _ = " "
 
 
@@ -5231,3 +5242,102 @@ returnsClause f tableCols s e = do
             ty <- typeName (tn & Pg.setof .~ False & Pg.location .~ fromIntegral at)
             sd <- if setof then (<> " ") <$> kw "setof" else pure mempty
             pure (k <+> sd <> ty)
+
+
+-- | @create trigger@: the trigger's name on the first line, then each
+-- clause on a line of its own, at the statement's column: @after insert@,
+-- @on t@, @referencing ...@, @for each row@, @when (...)@, @execute
+-- function f()@.
+createTrigger :: Pg.CreateTrigStmt -> R D
+createTrigger t = do
+    trigAt <- findTrigger 0
+    header <- wordsRun 0 (trigAt + 1)
+    let nameAt = trigAt + 1
+    name <- identAt nameAt (t ^. Pg.trigname)
+    end <- (+ 1) <$> lastTok
+    starts <- clauseStarts (nameAt + 1) end
+    case starts of
+        s0 : _ | s0 == nameAt + 1 -> pure ()
+        _ -> unsupported "a trigger pgfmt cannot read"
+    let ends = drop 1 starts ++ [end]
+    ds <- forM (zip starts ends) \(s, e) -> do
+        w <- tokL s
+        d <- case w of
+            "when" -> do
+                close <- expectParen (s + 1)
+                unless (close == e - 1) (unsupported "a trigger pgfmt cannot read")
+                c <- req "a trigger's condition" (t ^. Pg.maybe'whenClause)
+                k <- kw "when"
+                (k <+>) <$> checkCondition c
+            "execute" -> do
+                names <- strsOf (t ^. Pg.funcname)
+                ws <- wordsRun s (s + 2)
+                f <- qualNameAt (s + 2) names
+                let open = s + 2 + 2 * length names - 1
+                close <- expectParen open
+                unless (close == e - 1) (unsupported "a trigger pgfmt cannot read")
+                args <- looseRun (open + 1) close
+                pure (ws <+> f <> "(" <> args <> ")")
+            _ -> looseRun s e
+        b <- brk mempty s
+        pure (b <> d)
+    pure (header <+> name <> mconcat ds)
+  where
+    findTrigger j = do
+        w <- tokL j
+        case w of
+            "trigger" -> pure j
+            _ | w `elem` ["create", "or", "replace", "constraint"] -> findTrigger (j + 1)
+            _ -> unsupported "a trigger pgfmt cannot read"
+    -- Where each clause starts: the top-level words that start one.
+    clauseStarts j b
+        | j >= b = pure []
+        | otherwise = do
+            w <- tokL j
+            prev <- tokL (j - 1)
+            next <- tokL (j + 1)
+            let starts =
+                    w `elem` ["before", "after", "instead", "on", "from", "referencing", "for", "when", "execute"]
+                        || (w == "not" && next == "deferrable")
+                        || (w == "deferrable" && prev /= "not")
+                        || (w == "initially" && prev /= "deferrable")
+            rest <-
+                if w == "("
+                    then matchOf j >>= maybe (unsupported "an unclosed parenthesis") (\c -> clauseStarts (c + 1) b)
+                    else clauseStarts (j + 1) b
+            pure (if starts then j : rest else rest)
+
+
+-- | The longest @grant@ or @revoke@ that stays on one line.
+grantInlineThreshold :: Int
+grantInlineThreshold = 80
+
+
+-- | @grant@ and @revoke@, of privileges (@on@ objects) or of roles: on one
+-- line if short; otherwise the privileges on the first line, then @on@ the
+-- objects and @to@ (or @from@) the roles, each on a line of its own.
+grantStmt :: Bool -> R D
+grantStmt hasOn = do
+    end <- (+ 1) <$> lastTok
+    onAt <- if hasOn then Just <$> (firstTop ["on"] 1 end >>= req "a grant") else pure Nothing
+    toAt <- firstTop ["to", "from"] (maybe 1 (+ 1) onAt) end >>= req "a grant"
+    let starts = 0 : catMaybes [onAt, Just toAt]
+        ends = drop 1 starts ++ [end]
+    ps <- forM (zip starts ends) (uncurry looseRun)
+    cmts <- commentsBetween 0 (end - 1)
+    let inline = spaceJoin ps
+    case ps of
+        first : rest | cmts || len inline > grantInlineThreshold -> do
+            bs <- forM (drop 1 starts) (brk mempty)
+            pure (first <> nest indentSize (mconcat (zipWith (<>) bs rest)))
+        _ -> pure inline
+  where
+    -- The first of these words at the top level from @j@ to before @b@.
+    firstTop ws j b
+        | j >= b = pure Nothing
+        | otherwise = do
+            w <- tokL j
+            if
+                | w `elem` ws -> pure (Just j)
+                | w == "(" -> matchOf j >>= maybe (unsupported "an unclosed parenthesis") (\c -> firstTop ws (c + 1) b)
+                | otherwise -> firstTop ws (j + 1) b

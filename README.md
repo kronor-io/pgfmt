@@ -306,12 +306,29 @@ create index concurrently orders_status_idx
     where status <> 'paid';
 ```
 
+`create trigger` puts each clause on a line of its own, at the statement's
+column. `grant` and `revoke` stay on one line if it fits in 80 characters;
+otherwise `on` and `to` (or `from`) go on lines of their own, indented:
+
+```sql
+create trigger orders_touch
+before update
+on orders
+for each row
+when (new.status <> old.status)
+execute function touch_updated_at();
+grant select on orders to reporting;
+grant select, insert, update
+    on table orders, order_lines, refunds
+    to order_service, reporting;
+```
+
 Any other DDL goes to `libpg-query`, as does a statement with something
 `syntax` does not handle (`exclude`, `include`, `partition of`, ...):
 
 ```sql
 create sequence order_numbers start 1000 cache 10;
-grant select on orders to reporting;
+comment on table orders is 'One row per checkout.';
 ```
 
 ## PL/pgSQL
