@@ -136,8 +136,8 @@ statement n = case node n of
     Just (Pg.Node'AlterTableStmt a) -> local (\env -> env{tightTypes = True}) (alterTable a)
     Just (Pg.Node'CreateTableAsStmt c) -> createTableAs c
     Just (Pg.Node'CreateTrigStmt t) -> createTrigger t
-    Just (Pg.Node'GrantStmt _) -> grantStmt True
-    Just (Pg.Node'GrantRoleStmt _) -> grantStmt False
+    Just (Pg.Node'GrantStmt g) -> grantStmt GrantClauses{onObjects = True, grantees = granteesWord (g ^. Pg.isGrant)}
+    Just (Pg.Node'GrantRoleStmt g) -> grantStmt GrantClauses{onObjects = False, grantees = granteesWord (g ^. Pg.isGrant)}
     Just (Pg.Node'CallStmt c) -> do
         f <- req "a call" (c ^. Pg.maybe'funccall)
         e <- top (defMessage `withFuncCall` f)

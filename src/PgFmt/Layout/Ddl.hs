@@ -1210,18 +1210,14 @@ createTrigger t = do
             "trigger" -> pure j
             _ | w `elem` ["create", "or", "replace", "constraint"] -> findTrigger (j + 1)
             _ -> unsupported "a trigger pgfmt cannot read"
-    -- Where each clause starts: the top-level words that start one.
+    -- Where each clause starts, and what it is: the top-level words that
+    -- start one.
     clauseStarts j b
         | j >= b = pure []
         | otherwise = do
             w <- tokL j
             prev <- tokL (j - 1)
             next <- tokL (j + 1)
-            let starts =
-                    w `elem` ["before", "after", "instead", "on", "from", "referencing", "for", "when", "execute"]
-                        || (w == "not" && next == "deferrable")
-                        || (w == "deferrable" && prev /= "not")
-                        || (w == "initially" && prev /= "deferrable")
             rest <-
                 if w == "("
                     then matchOf j >>= maybe (unsupported "an unclosed parenthesis") (\c -> clauseStarts (c + 1) b)
@@ -1268,14 +1264,27 @@ grantInlineThreshold :: Int
 grantInlineThreshold = 80
 
 
+-- | The clauses of a @grant@ or @revoke@, as its tree says: whether it is of
+-- privileges @on@ objects, or of roles; and the word before the roles.
+data GrantClauses = GrantClauses
+    { onObjects :: Bool
+    , grantees :: Text
+    }
+
+
+-- | @to@ for a grant, @from@ for a revoke.
+granteesWord :: Bool -> Text
+granteesWord isGrant = if isGrant then "to" else "from"
+
+
 -- | @grant@ and @revoke@, of privileges (@on@ objects) or of roles: on one
 -- line if short; otherwise the privileges on the first line, then @on@ the
 -- objects and @to@ (or @from@) the roles, each on a line of its own.
-grantStmt :: Bool -> R D
-grantStmt hasOn = do
+grantStmt :: GrantClauses -> R D
+grantStmt clauses = do
     end <- (+ 1) <$> lastTok
-    onAt <- if hasOn then Just <$> (firstTop ["on"] 1 end >>= req "a grant") else pure Nothing
-    toAt <- firstTop ["to", "from"] (maybe 1 (+ 1) onAt) end >>= req "a grant"
+    onAt <- if clauses.onObjects then Just <$> (firstTop ["on"] 1 end >>= req "a grant") else pure Nothing
+    toAt <- firstTop [clauses.grantees] (maybe 1 (+ 1) onAt) end >>= req "a grant"
     let starts = 0 : catMaybes [onAt, Just toAt]
         ends = drop 1 starts ++ [end]
     ps <- forM (zip starts ends) (uncurry looseRun)
