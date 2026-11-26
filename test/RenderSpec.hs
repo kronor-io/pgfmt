@@ -1303,11 +1303,12 @@ main = do
 
 runTest :: TestCase -> (Bool, Text)
 runTest TestCase{name, qqCol, input, expected} =
-    -- 'formatSql' now returns 'Left' on AST mismatch; treating that as a
+    -- 'formatSql' returns 'Left' on AST mismatch; treating that as a
     -- failure is the whole point of this test suite — if the formatter ever
     -- emits semantically-different SQL, the test reports it as such.
-    let actual = either ("ERROR: " <>) id (formatSql qqCol (T.stripEnd input))
-        stringEq = T.stripEnd actual == T.stripEnd expected
+    let result = formatSql qqCol (T.stripEnd input)
+        actual = either ("ERROR: " <>) id result
+        stringEq = either (const False) (\a -> T.stripEnd a == T.stripEnd expected) result
         -- Semantic guard on the test fixture itself: the hand-written
         -- `expected` must parse to the same AST as `input`. Catches a
         -- fixture-authoring mistake even before the formatter runs.
@@ -1318,11 +1319,12 @@ runTest TestCase{name, qqCol, input, expected} =
             -- yield the same AST as `input`. Catches a renderer that drops
             -- or alters a clause but still emits valid SQL (the
             -- `DISTINCT ON (...)` regression that motivated this guard).
-        astFormatterEq = case (parseAst input, parseAst actual) of
-            (Just a, Just b) -> a == b
+        astFormatterEq = case (parseAst input, parseAst <$> result) of
+            (Just a, Right (Just b)) -> a == b
             _ -> True
         pass = stringEq && astFixtureEq && astFormatterEq
         reason
+            | Left _ <- result = "the formatter refused it"
             | not stringEq = "string mismatch"
             | not astFixtureEq = "AST mismatch: expected fixture is not semantically equivalent to input"
             | not astFormatterEq = "AST mismatch: formatter output is not semantically equivalent to input"
