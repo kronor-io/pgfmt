@@ -66,6 +66,7 @@ sameAsRender =
     , "select x from t join (select a from u) s on s.a = t.a join lateral f(t.a, t.b) z on true"
     , "select * from t where not exists (select 1 from u where u.a = t.a) and t.b is not null"
     , "select pc.a from p pc, jsonb_to_recordset(pc.j) as c (fingerprint text, masked_pan text)"
+    , "select x from t where a in (select all b from u) and c in (select distinct d from u)"
     ]
 
 

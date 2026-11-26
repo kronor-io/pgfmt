@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+* The `syntax` backend no longer writes `select` twice for a subquery with
+  an explicit `all` (`a in (select all b from u)`), which the parse-tree check
+  caught as an error.
+
 * `PgFmt.Layout` is split into modules along its sections: `Monad`,
   `Comments`, `Locations`, `Parens`, `Names`, `Expr`, `Dml` and `Ddl`.
   `docs/readability.md` says how the code is meant to read, and

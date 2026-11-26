@@ -217,10 +217,8 @@ targetPrefix mode s = do
     sel <- kw "select"
     case s ^. Pg.distinctClause of
         [] -> do
-            explicitAll <- case s ^. Pg.targetList of
-                t : _ | Just (Pg.Node'ResTarget rt) <- node t -> tokAt (fromIntegral (rt ^. Pg.location)) >>= \i -> tokIs (i - 1) "all"
-                _ -> pure False
-            if explicitAll then (sel <+>) <$> kw "all" else pure sel
+            written <- allWritten s
+            if written then (sel <+>) <$> kw "all" else pure sel
         [x] | isNothing (node x) -> (sel <+>) <$> kw "distinct"
         exprs -> do
             ls <- nonEmptyLocs (concatMap locsNode exprs)
@@ -236,6 +234,14 @@ targetPrefix mode s = do
             ds <- traverse (top >=> expr MP) exprs
             d <- kw "distinct on"
             pure (if mode == MP then d <> " (" <> commaJoin ds <> ")" else sel <+> d <+> "(" <> commaJoin ds <> ")")
+
+
+-- | Whether a select without @distinct@ has @all@ written before its
+-- targets.
+allWritten :: Pg.SelectStmt -> R Bool
+allWritten s = case s ^. Pg.targetList of
+    t : _ | Just (Pg.Node'ResTarget rt) <- node t -> tokAt (fromIntegral (rt ^. Pg.location)) >>= \i -> tokIs (i - 1) "all"
+    _ -> pure False
 
 
 targeting :: Pg.SelectStmt -> R D
@@ -447,8 +453,8 @@ selClauseP s
         targets <- traverse targetElP (s ^. Pg.targetList)
         quantifier <- case s ^. Pg.distinctClause of
             [] -> do
-                p <- targetPrefix MP s
-                pure if renderToText p == renderToText sel then Nothing else Just p
+                written <- allWritten s
+                if written then Just <$> kw "all" else pure Nothing
             _ -> Just <$> targetPrefixP s
         let t = case (quantifier, targets) of
                 (Nothing, []) -> Nothing
