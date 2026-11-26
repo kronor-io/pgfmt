@@ -14,7 +14,8 @@
 -- lower-cases the result), this module writes that renderer's spelling too
 -- (the 'P' mode below). It departs from "PgFmt.Render" to keep what the
 -- source wrote (dollar-quoted strings, multi-line strings and numbers stay as
--- they are, and comments are laid out rather than refused), and in one rule:
+-- they are, comments are laid out rather than refused, and a blank line
+-- between @values@ rows is kept), and in one rule:
 -- @values@ rows that all fit go on one line each.
 --
 -- PostgreSQL's parse tree forgets some of what the source said that
@@ -149,6 +150,9 @@ data Env = Env
     -- it is written quoted, and whether unquoted.
     , cmts :: IM.IntMap [Cmt]
     -- ^ The comments after each token (by index), in order.
+    , blankLineBefore :: IS.IntSet
+    -- ^ The tokens (by index) with a blank line directly before them, after
+    -- the token or comment that precedes them.
     }
 
 
@@ -190,11 +194,20 @@ mkEnv upper sql scan stmt =
         , upper
         , names = Map.fromListWith (\(a, b) (c, d) -> (a || c, b || d)) (mapMaybe' nameOf ts)
         , cmts = IM.fromListWith (flip (++)) (comments (-1) 0 (scan ^. Pg.tokens))
+        , blankLineBefore = IS.fromList (blanks 0 Nothing (scan ^. Pg.tokens))
         }
   where
     slice a b = BS.take (b - a) (BS.drop a sql)
     -- Each comment with the index of the token before it, and whether a line
     -- break separates it from what precedes it.
+    -- The index of each token with a blank line before it.
+    blanks _ _ [] = []
+    blanks i prevEnd (t : rest)
+        | isComment t = blanks i (Just e) rest
+        | otherwise = [i | Just pe <- [prevEnd], BS.count 10 (slice pe s) >= 2] ++ blanks (i + 1) (Just e) rest
+      where
+        s = fromIntegral (t ^. Pg.start)
+        e = fromIntegral (t ^. Pg.end)
     comments _ _ [] = []
     comments prev prevEnd (t : rest)
         | isComment t =
@@ -3282,7 +3295,11 @@ valuesClause s = do
                     _ | oneLine -> inlineRow ds
                     _ -> bracketList ds
         b <- brk mempty open
-        pure (b <> if i < lastIdx then bracketed <> "," else bracketed)
+        -- A blank line the source has before a row, after the first, is
+        -- kept: it separates groups of rows.
+        blank <- asks (IS.member open . (.blankLineBefore))
+        let gap = if blank && i > 0 then hardline else mempty
+        pure (b <> gap <> if i < lastIdx then bracketed <> "," else bracketed)
     pure (k <> nest indentSize (mconcat docs))
   where
     inlineRow ds = "(" <> commaJoin ds <> ")"
