@@ -61,6 +61,16 @@ library
     PgFmt.Plpgsql
     PgFmt.Render
 
+  other-modules:
+    PgFmt.Layout.Comments
+    PgFmt.Layout.Ddl
+    PgFmt.Layout.Dml
+    PgFmt.Layout.Expr
+    PgFmt.Layout.Locations
+    PgFmt.Layout.Monad
+    PgFmt.Layout.Names
+    PgFmt.Layout.Parens
+
   c-sources:       cbits/pgfmt.c
   extra-libraries: pg_query
   build-depends:
