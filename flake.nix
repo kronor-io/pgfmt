@@ -70,8 +70,12 @@
             overlays = [ haskellNix.overlay libpgQueryOverlay ];
           };
 
-          project = pkgs.haskell-nix.project {
+          # cabal.project builds against Hackage's postgresql-syntax;
+          # cabal.project.kronor against Kronor's fork, with the kronor-syntax
+          # flag for its hasql-th extensions.
+          mkProject = cabalProjectFileName: pkgs.haskell-nix.cabalProject {
             src = ./.;
+            inherit cabalProjectFileName;
             compiler-nix-name = "ghc9124";
             inputMap = {
               "https://kronor-io.github.io/kronor-haskell-packages" = kronor-haskell-packages;
@@ -81,11 +85,18 @@
               packages.pgfmt.components.library.libs = [ pkgs.libpg_query ];
             }];
           };
+
+          project = mkProject "cabal.project";
+          kronor = mkProject "cabal.project.kronor";
         in
         {
           inherit pkgs project;
           pgfmt = project.pgfmt.components.exes.pgfmt;
-          checks = project.pgfmt.checks;
+          pgfmt-kronor = kronor.pgfmt.components.exes.pgfmt;
+          checks = project.pgfmt.checks // {
+            render-kronor = kronor.pgfmt.checks.render;
+            file-kronor = kronor.pgfmt.checks.file;
+          };
         };
 
       githubPlatforms = {
@@ -99,6 +110,7 @@
     {
       packages = forAllSystems (system: rec {
         pgfmt = bySystem.${system}.pgfmt;
+        pgfmt-kronor = bySystem.${system}.pgfmt-kronor;
         default = pgfmt;
       });
 

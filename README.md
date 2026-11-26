@@ -320,10 +320,29 @@ gets `using btree`, and `interval '7 days'` can become `'7 days'::interval`.
 ## hasql-th
 
 `--dialect hasql-th` lets the `syntax` backend read the extensions that
-[hasql-th](https://github.com/kronor-io/hasql-th) adds to SQL in its
-quasiquotes (`$1 :: int8?`, `$Record {..}`, `$1.$field`). libpg_query cannot
+[hasql-th](https://github.com/nikita-volkov/hasql-th) adds to SQL in its
+quasiquotes, such as nullability markers (`$1 :: int8?`). libpg_query cannot
 read those, so a file using them is not valid SQL to pgfmt. To format a
 quasiquote's SQL, use the library's `PgFmt.Render.formatSql`.
+
+### Kronor's extensions
+
+Kronor's [fork of hasql-th](https://github.com/kronor-io/hasql-th) adds
+Haskell targets (`$Record {field = a :: int8}`, `$f (a :: int8, b :: text)`)
+and param fields (`$1.$field`). They need Kronor's fork of
+postgresql-syntax, so they are behind the `kronor-syntax` cabal flag, off by
+default. The flake builds that variant as `pgfmt-kronor`:
+
+```bash
+nix run --accept-flake-config github:kronor-io/pgfmt#pgfmt-kronor -- --help
+```
+
+With cabal, `cabal.project.kronor` adds Kronor's package repository and turns
+the flag on:
+
+```bash
+cabal build --project-file=cabal.project.kronor exe:pgfmt
+```
 
 ## Library
 
@@ -341,8 +360,9 @@ package's protobuf definitions were generated from.
 With Nix:
 
 ```bash
-nix build            # result/bin/pgfmt
-nix flake check      # the test suites
+nix build                   # result/bin/pgfmt
+nix build .#pgfmt-kronor    # with the kronor-syntax flag
+nix flake check             # the test suites, both variants
 ```
 
 The flake applies one patch to libpg_query,
@@ -356,9 +376,11 @@ The release binaries come from `scripts/build-static`, which builds the
 patched libpg_query and pgfmt in a ghc-musl container with Docker and writes
 `dist-static/pgfmt-<arch>-linux.tar.xz`.
 
-With cabal (GHC 9.12), build libpg_query 18 with that patch
+With cabal (GHC 9.12), everything else comes from Hackage. Build libpg_query
+18 with that patch
 (`patch -p1 < /path/to/pgfmt/nix/libpg_query-set-values-as-strings.patch` in
-its source tree) and point cabal at it in `cabal.project.local`:
+its source tree) and point cabal at it in `cabal.project.local` (for
+`cabal.project.kronor`, `cabal.project.kronor.local`):
 
 ```cabal
 package libpg-query

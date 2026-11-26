@@ -54,11 +54,14 @@ jobs:
           name: kronor-open
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
       - name: Build
-        run: nix build -L .#packages."${MATRIX_SYSTEM}".pgfmt
+        run: nix build -L .#packages."${MATRIX_SYSTEM}".pgfmt .#packages."${MATRIX_SYSTEM}".pgfmt-kronor
         env:
           MATRIX_SYSTEM: ${{ matrix.system }}
       - name: Test
-        run: nix build -L .#checks."${MATRIX_SYSTEM}".render .#checks."${MATRIX_SYSTEM}".file
+        run: >-
+          nix build -L
+          .#checks."${MATRIX_SYSTEM}".render .#checks."${MATRIX_SYSTEM}".file
+          .#checks."${MATRIX_SYSTEM}".render-kronor .#checks."${MATRIX_SYSTEM}".file-kronor
         env:
           MATRIX_SYSTEM: ${{ matrix.system }}
 

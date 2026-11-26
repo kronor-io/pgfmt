@@ -1,8 +1,14 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE FunctionalDependencies #-}
 
 -- | The postgresql-syntax backend: pgfmt's own layout for DML statements
--- (SELECT, INSERT, UPDATE, DELETE, VALUES), with Kronor's hasql-th extensions.
+-- (SELECT, INSERT, UPDATE, DELETE, VALUES), with hasql-th's extensions.
+--
+-- Built against Hackage's postgresql-syntax, the hasql-th dialect is upstream
+-- hasql-th's: nullability markers (@int8?@). With the @kronor-syntax@ flag,
+-- which needs Kronor's fork of postgresql-syntax, it also takes the fork's
+-- Haskell targets (@$Record {..}@, @$f (a, b)@) and param fields (@$1.$field@).
 module PgFmt.Render (
     Dialect (..),
     FormatError (..),
@@ -45,7 +51,9 @@ instance ToList Ast.FromList Ast.TableRef where toL (Ast.FromList xs) = NE.toLis
 instance ToList Ast.FromClause Ast.TableRef where toL (Ast.FromClause xs) = toL xs
 instance ToList Ast.GroupClause Ast.GroupByItem where toL (Ast.GroupClause xs) = NE.toList xs
 instance ToList Ast.Indirection Ast.IndirectionEl where toL (Ast.Indirection xs) = NE.toList xs
+#ifdef KRONOR_SYNTAX
 instance ToList Ast.HsTargetList Ast.HsTargetEl where toL (Ast.HsTargetList xs) = NE.toList xs
+#endif
 instance ToList Ast.SetClauseList Ast.SetClause where toL (Ast.SetClauseList xs) = NE.toList xs
 instance ToList Ast.SortClause Ast.SortBy where toL (Ast.SortClause xs) = NE.toList xs
 instance ToList Ast.RowsfromList Ast.RowsfromItem where toL (Ast.RowsfromList xs) = NE.toList xs
@@ -172,9 +180,9 @@ roundTrip dialect ast formatted =
             Left (RendererBug ("AST mismatch: formatter output did not re-parse (" <> err <> ")"))
 
 
--- | The renderer writes every Kronor extension back out, so it renders with
--- all three enabled whatever the dialect; plain SQL has none of them in its
--- AST. Only parsing depends on the dialect.
+-- | The renderer writes every extension back out, so it renders with all of
+-- them enabled whatever the dialect; plain SQL has none of them in its AST.
+-- Only parsing depends on the dialect.
 settings :: Ast.Settings
 settings = settingsFor HasqlTh
 
@@ -185,8 +193,10 @@ settingsFor = \case
     HasqlTh ->
         mconcat
             [ Ast.nullabilityMarkers True
+#ifdef KRONOR_SYNTAX
             , Ast.haskellTargets True
             , Ast.haskellParamFields True
+#endif
             ]
 
 
@@ -393,8 +403,10 @@ renderIndirectionEl = \case
     Ast.ExprIndirectionEl expr -> "[" <> renderExpr expr <> "]"
     Ast.SliceIndirectionEl mFrom mTo ->
         "[" <> maybe mempty renderExpr mFrom <> ":" <> maybe mempty renderExpr mTo <> "]"
+#ifdef KRONOR_SYNTAX
     -- Kronor extension: a Haskell field selector on a @$n@ placeholder.
     Ast.HsAttrNameIndirectionEl t -> ".$" <> pretty t
+#endif
 
 
 renderIdent :: Ast.Ident -> Doc ann
@@ -1294,7 +1306,11 @@ renderFromClauseInline fromList =
 renderTargetingInline :: Maybe Ast.Targeting -> Doc ann
 renderTargetingInline = \case
     Nothing -> "select"
+#ifdef KRONOR_SYNTAX
     Just (Ast.NormalTargeting tl) -> "select " <> commaJoin (map renderHsTargetElInline (toL tl))
+#else
+    Just (Ast.NormalTargeting tl) -> "select " <> commaJoin (map renderTargetEl (toL tl))
+#endif
     Just (Ast.AllTargeting Nothing) -> "select all"
     Just (Ast.AllTargeting (Just tl)) -> "select all " <> commaJoin (map renderTargetEl (toL tl))
     Just (Ast.DistinctTargeting mExprs tl) ->
@@ -1304,6 +1320,7 @@ renderTargetingInline = \case
          in prefix <> " " <> commaJoin (map renderTargetEl (toL tl))
 
 
+#ifdef KRONOR_SYNTAX
 -- | Render a hasql-th target element on a single line. Used in inline subquery
 -- contexts. The multi-line `$Name{...}` layout is handled separately by
 -- 'renderHsTargetEl'.
@@ -1323,6 +1340,7 @@ renderHsTargetElInline = \case
 renderHsFieldContentInline :: Ast.HsFieldTargetEl -> Doc ann
 renderHsFieldContentInline (Ast.HsFieldEl name target) =
     pretty name <> " = " <> renderHsTargetElInline target
+#endif
 
 
 ----------------------------------------------------------------------
@@ -1397,7 +1415,11 @@ renderSimpleSelect = \case
 renderTargeting :: Maybe Ast.Targeting -> Doc ann
 renderTargeting = \case
     Nothing -> "select"
+#ifdef KRONOR_SYNTAX
     Just (Ast.NormalTargeting tl) -> renderHsTargetList "select" tl
+#else
+    Just (Ast.NormalTargeting tl) -> renderSqlTargetList "select" tl
+#endif
     Just (Ast.AllTargeting Nothing) -> "select all"
     Just (Ast.AllTargeting (Just tl)) -> renderSqlTargetList "select all" tl
     Just (Ast.DistinctTargeting mExprs tl) ->
@@ -1407,6 +1429,7 @@ renderTargeting = \case
          in renderSqlTargetList prefix tl
 
 
+#ifdef KRONOR_SYNTAX
 -- | Block-list layout for hasql-th target lists. First item lands at one
 -- indent past the SELECT keyword; subsequent items are emitted as `, item` at
 -- (indent - 2), so every item's content column lines up vertically.
@@ -1429,6 +1452,7 @@ renderHsTargetList prefix tl =
   where
     isRecTarget (Ast.HsRecTargetEl _ _) = True
     isRecTarget _ = False
+#endif
 
 
 renderSqlTargetList :: Doc ann -> Ast.TargetList -> Doc ann
@@ -1446,10 +1470,12 @@ renderSqlTargetList prefix tl =
 -- is just the top-level CASE rule (peeling typecasts and parens) — keeping
 -- the predicate narrow avoids unintended layout changes for short single
 -- targets.
+#ifdef KRONOR_SYNTAX
 singleHsItemForcesMultiLine :: Ast.HsTargetEl -> Bool
 singleHsItemForcesMultiLine = \case
     Ast.SqlTargetEl te -> singleSqlItemForcesMultiLine te
     _ -> False
+#endif
 
 
 singleSqlItemForcesMultiLine :: Ast.TargetEl -> Bool
@@ -1489,6 +1515,7 @@ renderBlockListWith prefix renderItem items =
     renderRow _ item = commaPad <> ", " <> renderItem item
 
 
+#ifdef KRONOR_SYNTAX
 -- | Multi-line `$Name{...}` record layout:
 --
 -- @
@@ -1602,6 +1629,7 @@ isHsTargetWrapEligible = \case
     Ast.HsRecTargetEl _ _ -> True
     Ast.HsFuncTargetEl _ args -> not (null args)
     Ast.SqlTargetEl _ -> False
+#endif
 
 
 -- | Render the FROM clause. A list with no joins stays on a single line

@@ -1,0 +1,36 @@
+-- Build with Kronor's fork of postgresql-syntax, which the kronor-syntax flag
+-- needs for its hasql-th extensions:
+--
+--   cabal build --project-file=cabal.project.kronor
+--
+-- Everything else is cabal.project's, repeated rather than imported so that
+-- haskell.nix, which reads index-state from this file's own text, sees it.
+-- Keep the two in step.
+
+-- Kronor's package repository, for the postgresql-syntax fork the renderer
+-- uses (hasql-th's extensions to the grammar).
+repository github-kronor-haskell-packages
+  url: https://kronor-io.github.io/kronor-haskell-packages
+  secure: True
+  root-keys:
+    64307ca6c1cee780dd01e5e11193ba606b21fe1dd6a9102b838daff0c747eded
+    85a0bbddb3afe87449114e7b0622c9c80bd9164b5228dbc7db9fe66f3043f540
+    f344d0824b70101babfdea1e470b7388f6b8fc51b41186a627e98c71068a838c
+
+constraints:
+  postgresql-syntax == 0.5.0.3.0.*
+
+package pgfmt
+  flags: +kronor-syntax
+
+packages: .
+
+allow-newer:
+  *:base,
+  *:bytestring,
+  *:containers,
+  *:ghc-prim,
+  *:template-haskell,
+  *:text
+
+index-state: hackage.haskell.org 2026-11-24T23:00:00Z

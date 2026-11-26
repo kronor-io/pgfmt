@@ -1,4 +1,8 @@
+{-# LANGUAGE CPP #-}
+
 module Main where
+
+import Data.Char (isAlpha)
 
 import Data.String.Interpolate (__i)
 import Data.Text (Text)
@@ -19,9 +23,32 @@ parseAst t = either (const Nothing) Just (Ast.parse settings (T.strip t))
     settings =
         mconcat
             [ Ast.nullabilityMarkers True
+#ifdef KRONOR_SYNTAX
             , Ast.haskellTargets True
             , Ast.haskellParamFields True
+#endif
             ]
+
+
+-- | Whether a fixture uses the extensions only Kronor's fork of
+-- postgresql-syntax parses: Haskell targets (@$Record {..}@, @$f (a, b)@) and
+-- param fields (@$1.$field@), all of them a @$@ followed by a letter. The
+-- fixtures have no dollar-quoted strings, the one other place that happens.
+usesKronorSyntax :: Text -> Bool
+usesKronorSyntax t = any extension (zip chars (drop 1 chars))
+  where
+    chars = T.unpack t
+    extension (c, d) = c == '$' && (isAlpha d || d == '_')
+
+
+-- | The fixtures this build can parse: all of them with the @kronor-syntax@
+-- flag, the rest without.
+runnable :: [TestCase]
+#ifdef KRONOR_SYNTAX
+runnable = tests
+#else
+runnable = filter (\t -> not (usesKronorSyntax t.input)) tests
+#endif
 
 
 data TestCase = TestCase
@@ -1252,8 +1279,12 @@ tests =
 
 main :: IO ()
 main = do
-    let results = map runTest tests
+    let results = map runTest runnable
         failures = filter (not . fst) results
+        skipped = length tests - length runnable
+    if skipped > 0
+        then putStrLn (show skipped <> " fixtures need the kronor-syntax flag; skipped.")
+        else pure ()
     mapM_
         ( \(_, msg) -> do
             TIO.putStrLn "---"
@@ -1262,9 +1293,9 @@ main = do
         failures
     if null failures
         then do
-            putStrLn $ "All " <> show (length tests) <> " tests passed."
+            putStrLn $ "All " <> show (length runnable) <> " tests passed."
         else do
-            putStrLn $ "\n" <> show (length failures) <> " of " <> show (length tests) <> " tests FAILED."
+            putStrLn $ "\n" <> show (length failures) <> " of " <> show (length runnable) <> " tests FAILED."
             exitWith (ExitFailure 1)
 
 
