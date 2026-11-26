@@ -52,7 +52,7 @@ sameAsRender =
     , "select a from t where exists (select 1 from uuuuuuuuuuuuuuuuuuuuuu u where u.aaaaaaaaaaaaaaaaaaaaaaaa = t.aaaaaaaaaaaaaaaaaaaaaaaaaaaaa and u.b = 1)"
     , "select (case when a then 1 else 2 end)::text, (x + 1) * 2, -(x), not (a and b) from t"
     , "select \"Foo\", \"select\", t.\"Bar\", \"left\"(x, 1), left(x, 2) from \"MyTable\" t"
-    , "select 007, 1.5, 100.0, 'it''s', $$dollar$$, b'0101', x'FF', true, null"
+    , "select 007, 1.5, 100.0, 'it''s', b'0101', x'FF', true, null"
     , "select a from t where a = 1 and (b = 2 or c = 3) and d between 1 and 2 and e = 4"
     , "select x from t where (a = 1 and b = 2) and c = 3"
     , "select x from t where ((a and b) and c) and d or e"
@@ -79,6 +79,9 @@ expected =
     , (True, "select name, type from t where value = 1 and y between 1 and 2", "SELECT\n    name\n  , type\nFROM t\nWHERE value = 1\n  AND y BETWEEN 1 AND 2")
     , (False, "select x::varchar(10), y::time(3) with time zone from t", "select\n    x::varchar (10)\n  , y::time (3) with time zone\nfrom t")
     , (False, "select E'a\\nb', 1.50", "select\n    E'a\\nb'\n  , 1.50")
+    , -- Dollar-quoted strings are kept as written; plain ones continued over
+      -- lines are joined.
+      (False, "select $$it's$$, $f$ a\n b $f$, 'a'\n  'b'", "select\n    $$it's$$\n  , $f$ a\n b $f$\n  , 'ab'")
     , -- A string's lines stay as they are, however deep the layout puts it.
       (False, "with x as (select 'a\nb' as s) select s from x", "with x as (\n    select 'a\nb' as s\n)\nselect s\nfrom x")
     , -- Comments go where the layout breaks a line at their place: one on a
@@ -95,6 +98,8 @@ expected =
     , (False, "select a from t group by -- grouped\n  a", "select a\nfrom t\ngroup by -- grouped\n    a")
     , (False, "with x as (select 1), -- first\n  y as (select 2) select * from x, y", "with x as (\n    select 1\n), -- first\ny as (\n    select 2\n)\nselect *\nfrom x, y")
     , (True, "select 1 -- one\nunion all select 2", "SELECT 1 -- one\nUNION ALL\nSELECT 2")
+    , -- A blank line before a comment is kept.
+      (False, "select f(a, -- one\n\n  -- two\n  b)", "select f(\n      a -- one\n\n      -- two\n    , b\n)")
     ]
 
 

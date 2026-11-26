@@ -12,7 +12,9 @@
 -- the thresholds are "PgFmt.Render"'s, function for function. Where
 -- "PgFmt.Render" hands a node to postgresql-syntax's own renderer (and
 -- lower-cases the result), this module writes that renderer's spelling too
--- (the 'P' mode below).
+-- (the 'P' mode below). It departs from "PgFmt.Render" only to keep what the
+-- source wrote: dollar-quoted strings, multi-line strings and numbers stay as
+-- they are, and comments are laid out rather than refused.
 --
 -- PostgreSQL's parse tree forgets some of what the source said that
 -- postgresql-syntax's AST keeps: redundant parentheses, @!=@ for @<>@,
@@ -154,6 +156,8 @@ data Cmt = Cmt
     { ctext :: Text
     , ownLine :: Bool
     -- ^ Nothing but whitespace before it on its line.
+    , blankBefore :: Bool
+    -- ^ A blank line before it.
     }
 
 
@@ -193,7 +197,7 @@ mkEnv upper sql scan stmt =
     comments _ _ [] = []
     comments prev prevEnd (t : rest)
         | isComment t =
-            (prev, [Cmt{ctext = TE.decodeUtf8Lenient (slice s e), ownLine = prev < 0 || BS.elem 10 (slice prevEnd s)}])
+            (prev, [Cmt{ctext = TE.decodeUtf8Lenient (slice s e), ownLine = prev < 0 || BS.elem 10 (slice prevEnd s), blankBefore = BS.count 10 (slice prevEnd s) >= 2}])
                 : comments prev e rest
         | otherwise = comments (prev + 1) e rest
       where
@@ -355,12 +359,14 @@ gapBefore q = do
 
 
 -- | A line break before the token at @q@, with the comments before it;
--- @lead@ starts each comment line, aligning it with what follows.
+-- @lead@ starts each comment line, aligning it with what follows. A blank
+-- line before a comment on a line of its own is kept, as it separates
+-- comments about different things.
 brk :: D -> Int -> R D
 brk lead q = do
     cs <- gapBefore q
     let (trailing, rest) = span (not . (.ownLine)) cs
-    pure (mconcat [" " <> raw c.ctext | c <- trailing] <> hardline <> mconcat [lead <> raw c.ctext <> hardline | c <- rest])
+    pure (mconcat [" " <> raw c.ctext | c <- trailing] <> hardline <> mconcat [(if c.blankBefore then hardline else mempty) <> lead <> raw c.ctext <> hardline | c <- rest])
 
 
 -- | 'brk' where the token is known, a plain line break where not.
@@ -840,12 +846,12 @@ aConst mode c = do
         | otherwise = s
 
 
--- | A string constant: postgresql-syntax writes plain and dollar-quoted
--- strings as plain ones. Other kinds (@E'...'@) are kept as written.
+-- | A string constant: a plain one as postgresql-syntax writes it (which
+-- joins a string continued over lines into one); any other kind
+-- (dollar-quoted, @E'...'@) as written.
 stringConst :: Text -> Text -> R D
 stringConst value source
-    | "'" `T.isPrefixOf` source || "$" `T.isPrefixOf` source =
-        pure (raw ("'" <> T.replace "'" "''" value <> "'"))
+    | "'" `T.isPrefixOf` source = pure (raw ("'" <> T.replace "'" "''" value <> "'"))
     | otherwise = pure (raw source)
 
 

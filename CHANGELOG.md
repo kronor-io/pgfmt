@@ -16,6 +16,12 @@
   statements with comments in PL/pgSQL bodies; statements without comments
   come out byte for byte the same. The hasql-th dialect still leaves
   statements with comments alone.
+* A blank line before a comment on a line of its own is kept, so separate
+  comments stay apart.
+* Dollar-quoted strings (`$$...$$`, `$body$...$body$`) are kept as written
+  instead of being rewritten as `'...'`, which doubled every quote in a
+  multi-line job body. On Kronor's migrations these two changes touch 120
+  files (mostly `timetable.add_job(...)` calls); nothing else changes.
 
 ## 0.1.1.0
 

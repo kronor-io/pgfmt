@@ -350,9 +350,9 @@ gets `using btree`, and `interval '7 days'` can become `'7 days'::interval`.
 - libpg_query moves a comment that it cannot attach to a node to the end of
   the statement: `select a -- x` followed by `from t` comes out as `select a`,
   `from t`, `-- x`.
-- The `syntax` renderer fails its own check on some statements with
-  `$$`-quoted strings that contain comments. Those statements are left as they
-  are and pgfmt exits 2.
+- In Haskell quasiquotes, the `syntax` renderer fails its own check on some
+  statements with `$$`-quoted strings that contain comments. Those statements
+  are left as they are and pgfmt exits 2.
 
 ## Haskell: hasql-th quasiquotes
 
