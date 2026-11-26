@@ -3,7 +3,9 @@
 {-# LANGUAGE TypeApplications #-}
 
 -- | pgfmt's own layout for DML statements (SELECT, INSERT, UPDATE, DELETE,
--- VALUES), rendered from libpg_query's parse tree.
+-- VALUES), rendered from libpg_query's parse tree; and for CREATE TABLE,
+-- CREATE VIEW and CREATE ... AS, in a style of its own (see the DDL section
+-- at the end).
 --
 -- This is the layout "PgFmt.Render" gives over postgresql-syntax's AST, and
 -- it has to stay byte for byte the same: the rules (leading commas, one select
@@ -39,7 +41,7 @@ module PgFmt.Layout (
     formatStatement,
 ) where
 
-import Control.Monad (forM, unless, when, zipWithM)
+import Control.Monad (forM, forM_, unless, when, zipWithM)
 import Control.Monad.Reader (ReaderT, asks, local, runReaderT)
 import Control.Monad.State.Strict (StateT, gets, modify', runStateT)
 import Control.Monad.Except (MonadError (catchError, throwError))
@@ -51,7 +53,7 @@ import Data.Char (isAsciiLower, isAsciiUpper, isDigit, toLower)
 import Data.Foldable (toList)
 import Data.IntMap.Strict qualified as IM
 import Data.IntSet qualified as IS
-import Data.List (isSuffixOf)
+import Data.List (isSuffixOf, zip4)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (catMaybes, fromMaybe, isJust, isNothing, listToMaybe)
 import Data.ProtoLens.Message (FieldAccessor (..), FieldDescriptor (..), FieldTypeDescriptor (..), Message (..), ScalarField (..))
@@ -68,9 +70,10 @@ import Prettyprinter.Render.Text (renderStrict)
 import Unsafe.Coerce (unsafeCoerce)
 
 
--- | Lay out one DML statement (no comments before or after it, no
--- semicolon), keywords in upper case if asked, starting at column 0 without
--- a trailing newline. 'Left' says why not: the statement is not DML, or has
+-- | Lay out one DML, CREATE TABLE or CREATE VIEW statement (no comments
+-- before or after it, no semicolon), keywords in upper case if asked,
+-- starting at column 0 without a trailing newline. 'Left' says why not: the
+-- statement is none of those, or has
 -- something this renderer does not handle (a comment it cannot place among
 -- them).
 formatStatement :: Bool -> ByteString -> IO (Either Text Text)
@@ -150,6 +153,9 @@ data Env = Env
     -- it is written quoted, and whether unquoted.
     , cmts :: IM.IntMap [Cmt]
     -- ^ The comments after each token (by index), in order.
+    , tightTypes :: Bool
+    -- ^ Types written with no space before their modifiers, @numeric(10, 2)@,
+    -- as in DDL.
     , blankLineBefore :: IS.IntSet
     -- ^ The tokens (by index) with a blank line directly before them, after
     -- the token or comment that precedes them.
@@ -194,6 +200,7 @@ mkEnv upper sql scan stmt =
         , upper
         , names = Map.fromListWith (\(a, b) (c, d) -> (a || c, b || d)) (mapMaybe' nameOf ts)
         , cmts = IM.fromListWith (flip (++)) (comments (-1) 0 (scan ^. Pg.tokens))
+        , tightTypes = False
         , blankLineBefore = IS.fromList (blanks 0 Nothing (scan ^. Pg.tokens))
         }
   where
@@ -900,7 +907,8 @@ typeWords literal i = do
                 then do
                     (args, next) <- modifiers (i + 1)
                     d <- kw "interval"
-                    pure (d <> " " <> args, next)
+                    sep <- modifierSep
+                    pure (d <> sep <> args, next)
                 else do
                     d <- kw "interval"
                     (fields, next) <- intervalFields (i + 1)
@@ -916,7 +924,8 @@ typeWords literal i = do
                 if a `elem` ["with", "without"] && b == "time" && c == "zone"
                     then Just <$> kw (T.unwords [a, b, c])
                     else pure Nothing
-            pure (spaceJoin (d : catMaybes [precision, zone]), if isJust zone then j + 3 else j)
+            sep <- modifierSep
+            pure ((d <> maybe mempty (sep <>) precision) <> maybe mempty (" " <>) zone, if isJust zone then j + 3 else j)
         _ | w `elem` ["integer", "int", "smallint", "bigint", "real", "boolean"] -> fixed 1 [w]
         "double" | w1 == "precision" -> fixed 2 [w, w1]
         _ | w `elem` ["float", "decimal", "dec", "numeric"] -> withModifiers 1 [w]
@@ -934,7 +943,8 @@ typeWords literal i = do
             if isParen
                 then do
                     (args, next) <- modifiers j
-                    pure (name <> (if literal then mempty else " ") <> args, next)
+                    sep <- modifierSep
+                    pure (name <> (if literal then mempty else sep) <> args, next)
                 else pure (name, j)
   where
     withModifiers n words' = do
@@ -943,7 +953,8 @@ typeWords literal i = do
         if isParen
             then do
                 (args, next) <- modifiers (i + n)
-                pure (d <> " " <> args, next)
+                sep <- modifierSep
+                pure (d <> sep <> args, next)
             else pure (d, i + n)
     dotted j = do
         t <- tokM j
@@ -957,6 +968,11 @@ typeWords literal i = do
                         pure (part : rest, k)
                     else pure ([part], j + 1)
             _ -> unsupported "a type name pgfmt cannot read"
+
+
+-- | What goes between a type and its modifiers.
+modifierSep :: R D
+modifierSep = asks \env -> if env.tightTypes then mempty else " "
 
 
 -- | A type's modifiers, @(10, 2)@, from the parenthesis at this token: the
@@ -3923,13 +3939,16 @@ statement n = case node n of
     Just (Pg.Node'InsertStmt s) -> insertStmt s
     Just (Pg.Node'UpdateStmt s) -> updateStmt s
     Just (Pg.Node'DeleteStmt s) -> deleteStmt s
+    Just (Pg.Node'CreateStmt c) -> local (\env -> env{tightTypes = True}) (createTable c)
+    Just (Pg.Node'ViewStmt v) -> createView v
+    Just (Pg.Node'CreateTableAsStmt c) -> createTableAs c
     Just (Pg.Node'CallStmt c) -> do
         f <- req "a call" (c ^. Pg.maybe'funccall)
         e <- top (defMessage `withFuncCall` f)
         k <- kw "call"
         d <- funcApplication MP e f
         pure (k <+> d)
-    _ -> unsupported "not DML"
+    _ -> unsupported "not DML, create table or create view"
 
 
 -- | "PgFmt.Render"'s @renderPreparableStmt@, for a common table
@@ -4206,3 +4225,439 @@ whereOrCurrent n = case node n of
         name <- ident (c ^. Pg.cursorName)
         pure (k <+> name)
     _ -> condAligned 5 "where" n
+
+
+----------------------------------------------------------------------
+-- DDL: create table, create view, create table / materialized view as.
+--
+-- The keywords of a clause are the source's own words (@temp@ or
+-- @temporary@, an explicit @on delete no action@), in the keyword case;
+-- names, types and expressions come from the tree, as in DML. Anything
+-- else (storage options, @exclude@, @partition of@, ...) is not laid out.
+----------------------------------------------------------------------
+
+-- | The statement's last token, before any semicolon.
+lastTok :: R Int
+lastTok = do
+    ts <- asks (.toks)
+    case IM.lookupMax ts of
+        Just (i, t) | t.text == ";" -> pure (i - 1)
+        Just (i, _) -> pure i
+        Nothing -> unsupported "an empty statement"
+
+
+data Piece = Word | Open | Glue | Close
+
+
+-- | The tokens from @a@ to before @b@, which must be keywords, numbers, and
+-- parentheses and commas between them, as words in the keyword case:
+-- @not null@, @on delete set null@, @identity (start with 1 cache 10)@.
+wordsRun :: Int -> Int -> R D
+wordsRun a b = do
+    pieces <- forM [a .. b - 1] \j -> do
+        t <- tokM j
+        case t of
+            Just tk
+                | tk.text == "(" -> do
+                    _ <- expectParen j
+                    pure (Open, "(")
+                | tk.text `elem` [")", ","] -> pure (Close, pretty tk.text)
+                | tk.text == "-" -> pure (Glue, "-")
+                | tk.kind `elem` [Pg.ICONST, Pg.FCONST] -> pure (Word, pretty (T.toLower tk.text))
+                | tk.isKeyword && tk.kind /= Pg.IDENT -> (Word,) <$> kw (T.toLower tk.text)
+            _ -> unsupported "a clause pgfmt cannot read"
+    pure (joined pieces)
+  where
+    joined = \case
+        [] -> mempty
+        (k, d) : rest -> d <> go k rest
+    go _ [] = mempty
+    go prev ((k, d) : rest) = sep prev k <> d <> go k rest
+    -- No space after an opening parenthesis or a minus, or before a
+    -- closing parenthesis or a comma.
+    sep Open _ = mempty
+    sep Glue _ = mempty
+    sep _ Close = mempty
+    sep _ _ = " "
+
+
+-- | 'wordsRun', with a space before it, if there are any tokens.
+tailRun :: Int -> Int -> R D
+tailRun a b
+    | a >= b = pure mempty
+    | otherwise = (" " <>) <$> wordsRun a b
+
+
+-- | A parenthesized list of names, @(a, b)@, at this token: the list and
+-- the token after it.
+nameList :: Int -> [Text] -> R (D, Int)
+nameList open names = do
+    close <- expectParen open
+    unless (not (null names) && close == open + 2 * length names) (unsupported "a list of names pgfmt cannot read")
+    ds <- zipWithM (\k n -> identAt (open + 1 + 2 * k) n) [0 ..] names
+    pure ("(" <> commaJoin ds <> ")", close + 1)
+
+
+-- | How many tokens a relation's dotted name has, less its dots.
+nameParts :: Pg.RangeVar -> Int
+nameParts rv = length (filter (not . T.null) [rv ^. Pg.catalogname, rv ^. Pg.schemaname, rv ^. Pg.relname])
+
+
+-- | A relation's name and the token after it.
+relationAt :: Pg.RangeVar -> R (D, Int, Int)
+relationAt rv = do
+    at <- tokAt (fromIntegral (rv ^. Pg.location))
+    name <- relationName rv
+    pure (name, at, at + 2 * nameParts rv - 1)
+
+
+-- | @create table@: one column or constraint per line, each but the last
+-- followed by its comma.
+createTable :: Pg.CreateStmt -> R D
+createTable c = do
+    rv <- req "a create table" (c ^. Pg.maybe'relation)
+    when
+        (isJust (c ^. Pg.maybe'partbound) || isJust (c ^. Pg.maybe'ofTypename) || not (null (c ^. Pg.inhRelations)))
+        (unsupported "a create table pgfmt does not lay out")
+    (name, relAt, open) <- relationAt rv
+    header <- wordsRun 0 relAt
+    close <- expectParen open
+    let elts = c ^. Pg.tableElts
+    starts <- traverse elementStart elts
+    case starts of
+        [] -> unless (close == open + 1) (unsupported "a create table pgfmt cannot read")
+        s0 : rest -> do
+            unless (s0 == open + 1) (unsupported "a create table pgfmt cannot read")
+            forM_ rest \s -> do
+                comma <- tokIs (s - 1) ","
+                unless comma (unsupported "a create table pgfmt cannot read")
+    let ends = map (subtract 1) (drop 1 starts) ++ [close]
+        n = length elts
+    lines' <- forM (zip4 [0 :: Int ..] elts starts ends) \(i, el, s, e) -> do
+        d <- tableElement el s e
+        b <- brk mempty s
+        -- A blank line between two elements is kept, as between values rows.
+        blank <- asks (IS.member s . (.blankLineBefore))
+        let gap = if blank && i > 0 then hardline else mempty
+        pure (b <> gap <> d <> (if i < n - 1 then "," else mempty))
+    -- Comments before the closing parenthesis: one sharing the last line
+    -- ends it, one on a line of its own stays one, indented with the rows.
+    cs <- gapBefore close
+    let (trailing, own) = span (not . (.ownLine)) cs
+        endComments =
+            mconcat [" " <> raw x.ctext | x <- trailing]
+                <> mconcat [hardline <> (if x.blankBefore then hardline else mempty) <> raw x.ctext | x <- own]
+        body
+            | n == 0 && null cs = "()"
+            | otherwise = "(" <> nest indentSize (mconcat lines' <> endComments) <> hardline <> ")"
+    tl <- tableTail c (close + 1)
+    pure (header <+> name <+> body <> tl)
+
+
+-- | Where a table element starts.
+elementStart :: Pg.Node -> R Int
+elementStart el = case node el of
+    Just (Pg.Node'ColumnDef cd) -> tokAt (fromIntegral (cd ^. Pg.location))
+    Just (Pg.Node'Constraint k) -> tokAt (fromIntegral (k ^. Pg.location))
+    Just (Pg.Node'TableLikeClause l) -> do
+        rv <- req "a like clause" (l ^. Pg.maybe'relation)
+        at <- tokAt (fromIntegral (rv ^. Pg.location))
+        isLike <- tokIs (at - 1) "like"
+        unless isLike (unsupported "a like clause pgfmt cannot read")
+        pure (at - 1)
+    _ -> unsupported "a table element pgfmt cannot read"
+
+
+-- | A column, constraint or @like@ clause, from token @s@ to before @e@.
+tableElement :: Pg.Node -> Int -> Int -> R D
+tableElement el s e = case node el of
+    Just (Pg.Node'ColumnDef cd) -> columnDef cd s e
+    Just (Pg.Node'Constraint k) -> constraint k s e
+    Just (Pg.Node'TableLikeClause l) -> do
+        rv <- req "a like clause" (l ^. Pg.maybe'relation)
+        k <- kw "like"
+        (name, _, after) <- relationAt rv
+        opts <- tailRun after e
+        pure (k <+> name <> opts)
+    _ -> unsupported "a table element pgfmt cannot read"
+
+
+columnDef :: Pg.ColumnDef -> Int -> Int -> R D
+columnDef cd s e = do
+    when
+        ( not (T.null (cd ^. Pg.compression))
+            || not (T.null (cd ^. Pg.storageName))
+            || isJust (cd ^. Pg.maybe'collClause)
+            || not (null (cd ^. Pg.fdwoptions))
+            || isJust (cd ^. Pg.maybe'rawDefault)
+        )
+        (unsupported "a column pgfmt does not lay out")
+    name <- identAt s (cd ^. Pg.colname)
+    tn <- req "a column" (cd ^. Pg.maybe'typeName)
+    tyAt <- tokAt (fromIntegral (tn ^. Pg.location))
+    unless (tyAt == s + 1) (unsupported "a column pgfmt cannot read")
+    ty <- typeName tn
+    ks <- forM (cd ^. Pg.constraints) \k -> case node k of
+        Just (Pg.Node'Constraint x) -> (x,) <$> tokAt (fromIntegral (x ^. Pg.location))
+        _ -> unsupported "a column constraint pgfmt cannot read"
+    let kends = map snd (drop 1 ks) ++ [e]
+    kds <- forM (zip ks kends) \((x, a), b) -> constraint x a b
+    pure (spaceJoin (name : ty : kds))
+
+
+-- | A constraint, from token @a@ to before @b@, with its name if it has one.
+constraint :: Pg.Constraint -> Int -> Int -> R D
+constraint x a b
+    | T.null (x ^. Pg.conname) = constraintBody 0 x a b
+    | otherwise = do
+        isCon <- tokIs a "constraint"
+        unless isCon (unsupported "a constraint pgfmt cannot read")
+        k <- kw "constraint"
+        n <- identAt (a + 1) (x ^. Pg.conname)
+        -- Comments between the name and the body: the body goes on the
+        -- line after them, indented.
+        cs <- gapBefore (a + 2)
+        d <- constraintBody (if null cs then len (k <+> n) + 1 else 0) x (a + 2) b
+        if null cs
+            then pure (k <+> n <+> d)
+            else do
+                br <- brk mempty (a + 2)
+                pure (k <+> n <> nest indentSize (br <> d))
+
+
+-- | A constraint without its name, which takes @before@ characters of its
+-- line.
+constraintBody :: Int -> Pg.Constraint -> Int -> Int -> R D
+constraintBody before x a b = case x ^. Pg.contype of
+    Pg.CONSTR_NULL -> wordsRun a b
+    Pg.CONSTR_NOTNULL | null (x ^. Pg.keys) -> wordsRun a b
+    Pg.CONSTR_IDENTITY -> wordsRun a b
+    k | k `elem` [Pg.CONSTR_ATTR_DEFERRABLE, Pg.CONSTR_ATTR_NOT_DEFERRABLE, Pg.CONSTR_ATTR_DEFERRED, Pg.CONSTR_ATTR_IMMEDIATE] -> wordsRun a b
+    Pg.CONSTR_DEFAULT -> do
+        isDefault <- tokIs a "default"
+        unless isDefault (unsupported "a default pgfmt cannot read")
+        k <- kw "default"
+        ex <- req "a default" (x ^. Pg.maybe'rawExpr)
+        d <- ddlExpr ex
+        pure (k <+> d)
+    Pg.CONSTR_GENERATED -> do
+        open <- parenWithin
+        w <- wordsRun a open
+        close <- expectParen open
+        ex <- req "a generated column" (x ^. Pg.maybe'rawExpr)
+        d <- ddlExpr ex
+        t <- tailRun (close + 1) b
+        pure (w <+> "(" <> d <> ")" <> t)
+    Pg.CONSTR_CHECK -> do
+        open <- parenWithin
+        w <- wordsRun a open
+        close <- expectParen open
+        ex <- req "a check" (x ^. Pg.maybe'rawExpr)
+        d <- checkCondition ex
+        t <- tailRun (close + 1) b
+        pure (w <+> d <> t)
+    k | k `elem` [Pg.CONSTR_PRIMARY, Pg.CONSTR_UNIQUE] -> do
+        when
+            ( not (null (x ^. Pg.including))
+                || not (null (x ^. Pg.options))
+                || not (T.null (x ^. Pg.indexname))
+                || not (T.null (x ^. Pg.indexspace))
+                || isJust (x ^. Pg.maybe'whereClause)
+                || x ^. Pg.withoutOverlaps
+            )
+            (unsupported "a key pgfmt does not lay out")
+        if null (x ^. Pg.keys)
+            then wordsRun a b
+            else do
+                open <- parenWithin
+                w <- wordsRun a open
+                names <- strsOf (x ^. Pg.keys)
+                (l, after) <- nameList open names
+                t <- tailRun after b
+                pure (w <+> l <> t)
+    Pg.CONSTR_FOREIGN -> do
+        when
+            (not (null (x ^. Pg.fkDelSetCols)) || x ^. Pg.fkWithPeriod || x ^. Pg.pkWithPeriod)
+            (unsupported "a foreign key pgfmt does not lay out")
+        (lead, refAt) <-
+            if null (x ^. Pg.fkAttrs)
+                then pure (mempty, a)
+                else do
+                    open <- parenWithin
+                    w <- wordsRun a open
+                    names <- strsOf (x ^. Pg.fkAttrs)
+                    (l, after) <- nameList open names
+                    pure (w <+> l, after)
+        isRef <- tokIs refAt "references"
+        unless isRef (unsupported "a foreign key pgfmt cannot read")
+        k <- kw "references"
+        pk <- req "a foreign key" (x ^. Pg.maybe'pktable)
+        (name, pkAt, after) <- relationAt pk
+        unless (pkAt == refAt + 1) (unsupported "a foreign key pgfmt cannot read")
+        (cols, rest) <-
+            if null (x ^. Pg.pkAttrs)
+                then pure (mempty, after)
+                else strsOf (x ^. Pg.pkAttrs) >>= nameList after
+        t <- tailRun rest b
+        let refs = k <+> name <> cols <> t
+        -- A long one breaks before @references@.
+        pure
+            if
+                | null (x ^. Pg.fkAttrs) -> refs
+                | before + len (lead <+> refs) <= foreignKeyInlineThreshold -> lead <+> refs
+                | otherwise -> nest indentSize (lead <> hardline <> refs)
+    _ -> unsupported "a constraint pgfmt does not lay out"
+  where
+    parenWithin = do
+        open <- nextParen a
+        unless (open < b) (unsupported "a constraint pgfmt cannot read")
+        pure open
+
+
+-- | A check constraint's condition, in its parentheses: on one line if
+-- short, otherwise each top-level @and@ (or @or@) on a line of its own.
+checkCondition :: Pg.Node -> R D
+checkCondition n = do
+    e <- top n
+    inline <- expr MR e
+    case node n of
+        Just (Pg.Node'BoolExpr be)
+            | e.lv == 0
+            , Just op <- lookup (be ^. Pg.boolop) [(Pg.AND_EXPR, "and"), (Pg.OR_EXPR, "or")]
+            , len inline > checkInlineThreshold
+            , first : rest <- be ^. Pg.args -> do
+                opK <- kw op
+                fd <- child n first >>= expr MR
+                rds <- traverse (child n >=> expr MR) rest
+                pure ("(" <> nest indentSize (hardline <> vsep (fd : map (opK <+>) rds)) <> hardline <> ")")
+        _ -> do
+            d <- ddlExpr n
+            pure ("(" <> d <> ")")
+
+
+-- | An expression in a column or constraint: on one line if short,
+-- otherwise wrapped as a long select target is.
+ddlExpr :: Pg.Node -> R D
+ddlExpr n = do
+    e <- top n
+    inline <- expr MR e
+    eligible <- isWrapEligible e
+    if len inline > checkInlineThreshold && eligible
+        then exprWrapped e
+        else pure inline
+
+
+-- | The longest table foreign key, with its name, that stays on one line.
+foreignKeyInlineThreshold :: Int
+foreignKeyInlineThreshold = 90
+
+
+-- | The longest check condition that stays on one line.
+checkInlineThreshold :: Int
+checkInlineThreshold = 80
+
+
+-- | What follows a table's columns: @partition by range (a)@, @on commit
+-- drop@.
+tableTail :: Pg.CreateStmt -> Int -> R D
+tableTail c from = do
+    end <- (+ 1) <$> lastTok
+    case c ^. Pg.maybe'partspec of
+        Nothing -> tailRun from end
+        Just ps -> do
+            pAt <- tokAt (fromIntegral (ps ^. Pg.location))
+            pre <- tailRun from pAt
+            open <- nextParen pAt
+            w <- wordsRun pAt open
+            names <- forM (ps ^. Pg.partParams) \p -> case node p of
+                Just (Pg.Node'PartitionElem pe)
+                    | not (T.null (pe ^. Pg.name))
+                    , isNothing (pe ^. Pg.maybe'expr)
+                    , null (pe ^. Pg.collation)
+                    , null (pe ^. Pg.opclass) ->
+                        pure (pe ^. Pg.name)
+                _ -> unsupported "a partition key pgfmt does not lay out"
+            (l, after) <- nameList open names
+            post <- tailRun after end
+            pure (pre <> " " <> w <+> l <> post)
+
+
+-- | @create view@: its query laid out as a statement of its own, under
+-- the line that names the view.
+createView :: Pg.ViewStmt -> R D
+createView v = do
+    rv <- req "a view" (v ^. Pg.maybe'view)
+    unless (null (v ^. Pg.options)) (unsupported "a view with options")
+    aliases <- strsOf (v ^. Pg.aliases)
+    q <- req "a view" (v ^. Pg.maybe'query)
+    checkOption <- case v ^. Pg.withCheckOption of
+        o | o `elem` [Pg.LOCAL_CHECK_OPTION, Pg.CASCADED_CHECK_OPTION] -> do
+            end <- lastTok
+            ws <- traverse tokL [end - 3 .. end]
+            from <- case ws of
+                ["with", m, "check", "option"] | m `elem` ["local", "cascaded"] -> pure (end - 3)
+                [_, "with", "check", "option"] -> pure (end - 2)
+                _ -> unsupported "a check option pgfmt cannot read"
+            Just <$> wordsRun from (end + 1)
+        _ -> pure Nothing
+    asQuery rv aliases q checkOption
+
+
+-- | @create table ... as@ and @create materialized view ... as@.
+createTableAs :: Pg.CreateTableAsStmt -> R D
+createTableAs c = do
+    unless (c ^. Pg.objtype `elem` [Pg.OBJECT_TABLE, Pg.OBJECT_MATVIEW]) (unsupported "a create as pgfmt does not lay out")
+    when (c ^. Pg.isSelectInto) (unsupported "select into")
+    into <- req "a create as" (c ^. Pg.maybe'into)
+    when
+        ( not (null (into ^. Pg.options))
+            || not (T.null (into ^. Pg.accessMethod))
+            || not (T.null (into ^. Pg.tableSpaceName))
+        )
+        (unsupported "a create as pgfmt does not lay out")
+    rv <- req "a create as" (into ^. Pg.maybe'rel)
+    cols <- strsOf (into ^. Pg.colNames)
+    q <- req "a create as" (c ^. Pg.maybe'query)
+    end <- lastTok
+    ws <- traverse tokL [end - 2 .. end]
+    withData <- case ws of
+        ["with", "no", "data"] -> Just <$> wordsRun (end - 2) (end + 1)
+        [_, "with", "data"] -> Just <$> wordsRun (end - 1) (end + 1)
+        _ -> pure Nothing
+    asQuery rv cols q withData
+
+
+-- | The head of a @create ... as@ (its words, the name, the column names),
+-- its query on the lines after it, and what follows the query on a line of
+-- its own.
+asQuery :: Pg.RangeVar -> [Text] -> Pg.Node -> Maybe D -> R D
+asQuery rv cols q after = do
+    (name, relAt, next) <- relationAt rv
+    recursive <- anyM (`tokIs` "recursive") [0 .. relAt - 1]
+    when recursive (unsupported "a recursive view")
+    header <- wordsRun 0 relAt
+    (colsD, asAt) <-
+        if null cols
+            then pure (mempty, next)
+            else do
+                (l, nx) <- nameList next cols
+                pure (" " <> l, nx)
+    -- Words before @as@: @on commit drop@.
+    asAt' <- findAs asAt
+    between <- tailRun asAt asAt'
+    asK <- kw "as"
+    s <- case node q of
+        Just (Pg.Node'SelectStmt s) -> pure s
+        _ -> unsupported "a query pgfmt does not lay out"
+    k <- selectParens 0 s
+    body <- selStmt s k
+    first <- selectFirst s
+    b <- brk mempty first
+    pure (header <+> name <> colsD <> between <+> asK <> b <> body <> maybe mempty (hardline <>) after)
+  where
+    findAs j = do
+        t <- tokM j
+        case t of
+            Just tk | T.toLower tk.text == "as" -> pure j
+            Just tk | tk.isKeyword && tk.kind /= Pg.IDENT -> findAs (j + 1)
+            _ -> unsupported "a create as pgfmt cannot read"
