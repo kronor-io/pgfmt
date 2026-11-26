@@ -23,6 +23,7 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Lens.Micro ((^.))
+import PgFmt.Layout qualified as Layout
 import PgFmt.LibPgQuery (LibPgQueryError (..), PrettyOptions, Statement (..), Token (..))
 import PgFmt.LibPgQuery qualified as LibPgQuery
 import PgFmt.Plpgsql qualified as Plpgsql
@@ -33,8 +34,10 @@ import PgQuery qualified as Pg
 
 -- | What lays out a statement.
 data Backend
-    = -- | pgfmt's own renderer over postgresql-syntax. DML only; statements it
-      -- does not parse, or that have comments inside them, are left as they are.
+    = -- | pgfmt's own layout. DML only; statements it does not lay out, or
+      -- that have comments inside them, are left as they are. Plain SQL is
+      -- laid out from libpg_query's parse tree ("PgFmt.Layout"), the
+      -- hasql-th dialect from postgresql-syntax's ("PgFmt.Render").
       Syntax
     | -- | libpg_query's pretty-printer. Any statement PostgreSQL parses,
       -- comments included.
@@ -245,8 +248,8 @@ layOut opts column code = do
     attempt <- runBackend opts code (comments > 0)
     case attempt of
         Left outcome -> pure (Left outcome)
-        Right (used, formatted0) -> do
-            cased <- applyKeywordCase opts used code formatted0
+        Right (used, alreadyCased, formatted0) -> do
+            cased <- if alreadyCased then pure (Right formatted0) else applyKeywordCase opts used code formatted0
             case cased of
                 Left reason -> pure (Left (Failed reason))
                 Right formatted1 -> do
@@ -271,24 +274,33 @@ formatEmbedded opts column query = do
         _ -> pure (Right Nothing)
 
 
--- | Lay out one statement, or say why not.
-runBackend :: Options -> ByteString -> Bool -> IO (Either Outcome (Backend, Text))
+-- | Lay out one statement, or say why not. With the layout, whether its
+-- keywords are already in the requested case.
+runBackend :: Options -> ByteString -> Bool -> IO (Either Outcome (Backend, Bool, Text))
 runBackend opts body interiorComments = case opts.backend of
-    Syntax -> pure (syntax body)
+    Syntax -> syntax body
     LibPgQuery -> libpgQuery body
-    Auto -> case syntax body of
-        Right ok -> pure (Right ok)
-        Left (Failed reason) -> pure (Left (Failed reason))
-        Left (Kept _) -> libpgQuery body
-        Left other -> pure (Left other)
+    Auto -> do
+        laid <- syntax body
+        case laid of
+            Right ok -> pure (Right ok)
+            Left (Failed reason) -> pure (Left (Failed reason))
+            Left (Kept _) -> libpgQuery body
+            Left other -> pure (Left other)
   where
     syntax sql
-        -- postgresql-syntax drops comments, and its AST check cannot see that.
-        | interiorComments = Left (Kept "comments inside the statement")
-        | otherwise = case Render.formatStatement opts.dialect (decode sql) of
-            Right formatted -> Right (Syntax, formatted)
-            Left (Unsupported _) -> Left (Kept "postgresql-syntax does not parse it")
-            Left (RendererBug reason) -> Left (Failed reason)
+        -- Neither renderer places comments.
+        | interiorComments = pure (Left (Kept "comments inside the statement"))
+        | otherwise = case opts.dialect of
+            PlainSql -> do
+                laid <- Layout.formatStatement (opts.keywordCase == Upper) sql
+                pure case laid of
+                    Right formatted -> Right (Syntax, True, formatted)
+                    Left reason -> Left (Kept ("pgfmt does not lay it out: " <> reason))
+            HasqlTh -> pure case Render.formatStatement opts.dialect (decode sql) of
+                Right formatted -> Right (Syntax, False, formatted)
+                Left (Unsupported _) -> Left (Kept "postgresql-syntax does not parse it")
+                Left (RendererBug reason) -> Left (Failed reason)
     libpgQuery sql = do
         parsed <- LibPgQuery.parse sql
         case parsed of
@@ -297,16 +309,17 @@ runBackend opts body interiorComments = case opts.backend of
                 printed <- LibPgQuery.deparsePretty opts.pretty (Just sql) tree
                 pure case printed of
                     Left err -> Left (Kept ("libpg_query could not deparse it: " <> err.message))
-                    Right formatted -> Right (LibPgQuery, T.strip formatted)
+                    Right formatted -> Right (LibPgQuery, False, T.strip formatted)
 
 -- | Spell the keywords of a backend's output in the chosen case.
 --
 -- Telling keywords from identifiers spelled like keywords (@name@, @type@):
 -- libpg_query writes keywords in upper case and unquoted identifiers in lower
--- case, so its upper-case keyword tokens are keywords. For the syntax backend,
--- the statement is rendered again
--- with its identifiers masked ('Render.renderIdentifiersMasked'); the tokens
--- that differ between the two renderings are identifiers.
+-- case, so its upper-case keyword tokens are keywords. For the syntax backend
+-- on the hasql-th dialect, the statement is rendered again with its
+-- identifiers masked ('Render.renderIdentifiersMasked'); the tokens that
+-- differ between the two renderings are identifiers. ("PgFmt.Layout", for
+-- plain SQL, writes keywords in the right case itself.)
 applyKeywordCase :: Options -> Backend -> ByteString -> Text -> IO (Either Text Text)
 applyKeywordCase opts used body formatted = do
     let bytes = TE.encodeUtf8 formatted

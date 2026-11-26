@@ -60,8 +60,8 @@ jobs:
       - name: Test
         run: >-
           nix build -L
-          .#checks."${MATRIX_SYSTEM}".render .#checks."${MATRIX_SYSTEM}".file .#checks."${MATRIX_SYSTEM}".haskell
-          .#checks."${MATRIX_SYSTEM}".render-kronor .#checks."${MATRIX_SYSTEM}".file-kronor .#checks."${MATRIX_SYSTEM}".haskell-kronor
+          .#checks."${MATRIX_SYSTEM}".render .#checks."${MATRIX_SYSTEM}".file .#checks."${MATRIX_SYSTEM}".haskell .#checks."${MATRIX_SYSTEM}".layout
+          .#checks."${MATRIX_SYSTEM}".render-kronor .#checks."${MATRIX_SYSTEM}".file-kronor .#checks."${MATRIX_SYSTEM}".haskell-kronor .#checks."${MATRIX_SYSTEM}".layout-kronor
         env:
           MATRIX_SYSTEM: ${{ matrix.system }}
 

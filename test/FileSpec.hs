@@ -45,7 +45,7 @@ cases =
         , backend = Syntax
         , keywordCase = Lower
         , input = "CREATE TABLE t (a int, b text);\n"
-        , expected = Unchanged "postgresql-syntax does not parse it"
+        , expected = Unchanged "pgfmt does not lay it out: not DML"
         }
     , Case
         { name = "syntax: a comment inside a statement leaves it alone"

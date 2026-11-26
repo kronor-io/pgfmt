@@ -4,7 +4,7 @@ version:       0.1.1.0
 synopsis:      Format PostgreSQL, checked against PostgreSQL's own parser
 description:
   pgfmt formats SQL files statement by statement. Each statement is laid out
-  either by pgfmt's own renderer (DML, over postgresql-syntax) or by
+  either by pgfmt's own renderer (DML, over libpg_query's parse tree) or by
   libpg_query's pretty-printer (anything PostgreSQL parses), and is only
   rewritten if libpg_query reads the result as the same statement.
 
@@ -56,6 +56,7 @@ library
     PgFmt
     PgFmt.File
     PgFmt.Haskell
+    PgFmt.Layout
     PgFmt.LibPgQuery
     PgFmt.Plpgsql
     PgFmt.Render
@@ -66,9 +67,11 @@ library
     , aeson
     , base               >=4.18 && <5
     , bytestring
+    , containers
     , libpg-query        ^>=0.1
     , microlens
     , postgresql-syntax  >=0.5.0.3 && <0.6
+    , mtl
     , prettyprinter
     , proto-lens
     , syb
@@ -126,6 +129,18 @@ test-suite haskell
   type:           exitcode-stdio-1.0
   hs-source-dirs: test
   main-is:        HaskellSpec.hs
+  build-depends:
+    , base
+    , pgfmt
+    , text
+
+-- pgfmt's layout over libpg_query's tree: the same as the renderer's over
+-- postgresql-syntax's, and what only it lays out.
+test-suite layout
+  import:         shared
+  type:           exitcode-stdio-1.0
+  hs-source-dirs: test
+  main-is:        LayoutSpec.hs
   build-depends:
     , base
     , pgfmt
