@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+* The `syntax` backend lays out `create trigger`, `grant` and `revoke`. A
+  trigger has each clause on a line of its own, at the statement's column,
+  its `when` condition broken like a `check`'s if long. A `grant` or `revoke`
+  stays on one line if it fits in 80 characters; otherwise `on` and `to` (or
+  `from`) go on lines of their own, indented. On Kronor's migrations this
+  lays out 882 more statements, all their triggers and grants, changing 151
+  files (390 in upper case); none fails the parse-tree check, and formatting
+  again changes nothing.
+
 * The `syntax` backend lays out `create function` and `create procedure`:
   the arguments on the first line, or one per line with the comma at the end
   if they do not fit or have comments; each clause before the body on a line

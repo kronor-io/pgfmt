@@ -149,6 +149,18 @@ expected =
       (False, "alter table t add column a   int not null default 0", "alter table t\n    add column a int not null default 0")
     , (False, "alter table t drop column if exists a cascade, drop constraint c, add constraint fk foreign key (b) references u(id) not valid, validate constraint d", "alter table t\n    drop column if exists a cascade,\n    drop constraint c,\n    add constraint fk foreign key (b) references u(id) not valid,\n    validate constraint d")
     , (True, "alter table t alter column a type numeric(10,2) using a::numeric, alter column b set default now(), alter column c drop not null, enable row level security, set (fillfactor = 70)", "ALTER TABLE t\n    ALTER COLUMN a TYPE NUMERIC(10, 2) USING a::NUMERIC,\n    ALTER COLUMN b SET DEFAULT now(),\n    ALTER COLUMN c DROP NOT NULL,\n    ENABLE ROW LEVEL SECURITY,\n    SET (fillfactor = 70)")
+    , -- create trigger: each clause on a line of its own, not indented.
+      (False, "create trigger t after insert or update of a, b on s.t referencing new table as changed for each statement execute function s.f('x', 1)", "create trigger t\nafter insert or update of a, b\non s.t\nreferencing new table as changed\nfor each statement\nexecute function s.f('x', 1)")
+    , (True, "create constraint trigger t after insert on t from u deferrable initially deferred for each row when (NEW.a <> OLD.a) execute procedure f()", "CREATE CONSTRAINT TRIGGER t\nAFTER INSERT\nON t\nFROM u\nDEFERRABLE INITIALLY DEFERRED\nFOR EACH ROW\nWHEN (new.a <> old.a)\nEXECUTE PROCEDURE f()")
+    , -- A comment between clauses; a long condition broken at its ands.
+      (False, "create trigger t before update on t -- the table\nfor each row when (new.aaaaaaaaaaaaaaaa is not null and new.bbbbbbbbbbbbbbbbbbbb is null and new.cccccccccccccccc is null) execute function f()", "create trigger t\nbefore update\non t -- the table\nfor each row\nwhen (\n    new.aaaaaaaaaaaaaaaa is not null\n    and new.bbbbbbbbbbbbbbbbbbbb is null\n    and new.cccccccccccccccc is null\n)\nexecute function f()")
+    , -- grant and revoke: one line if short, else on and to on lines of
+      -- their own.
+      (False, "grant select\n    on table t\n    to a", "grant select on table t to a")
+    , (True, "grant select, insert, update on table tenant.apple_pay_config to cde_admin, merchant, customer", "GRANT SELECT, INSERT, UPDATE\n    ON TABLE tenant.apple_pay_config\n    TO cde_admin, merchant, customer")
+    , (False, "revoke all on function f(bigint, text) from public cascade", "revoke all on function f(bigint, text) from public cascade")
+    , (False, "grant select (a, b) on t -- why\nto x with grant option", "grant select (a, b)\n    on t -- why\n    to x with grant option")
+    , (False, "grant data_worker_ro to \"kronor-worker-read-csv\"", "grant data_worker_ro to \"kronor-worker-read-csv\"")
     ]
 
 
@@ -162,6 +174,7 @@ refused =
     , "create table t (a int) with (fillfactor = 70)"
     , "create table p partition of t for values from (1) to (2)"
     , "create recursive view v (n) as select 1 union all select n + 1 from v"
+    , "grant select on t to a -- why\nwith grant option"
     , "select x from t where a similar to 'b'"
     , "select 1; select 2"
     , -- No line break where the comment is.
