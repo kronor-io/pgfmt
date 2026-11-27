@@ -6,14 +6,14 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Text.IO qualified as TIO
-import PgFmt.Layout qualified as Layout
-import PgFmt.Render (Dialect (..))
-import PgFmt.Render qualified as Render
+import PgStyle.Layout qualified as Layout
+import PgStyle.Render (Dialect (..))
+import PgStyle.Render qualified as Render
 import System.Exit (exitFailure)
 
 
--- | Statements both renderers lay out: "PgFmt.Layout", over libpg_query's
--- tree, must write each exactly as "PgFmt.Render" does over
+-- | Statements both renderers lay out: "PgStyle.Layout", over libpg_query's
+-- tree, must write each exactly as "PgStyle.Render" does over
 -- postgresql-syntax's.
 sameAsRender :: [Text]
 sameAsRender =
@@ -93,7 +93,7 @@ expected =
     , lower "select x::varchar(10), y::time(3) with time zone from t" "select\n    x::varchar (10)\n  , y::time (3) with time zone\nfrom t"
     , lower "select E'a\\nb', 1.50" "select\n    E'a\\nb'\n  , 1.50"
     , -- Values rows go on one line each when every row fits, unlike
-      -- "PgFmt.Render"; a row too long, or with a comment inside, puts
+      -- "PgStyle.Render"; a row too long, or with a comment inside, puts
       -- every row's values one per line.
       lower "values (1, 'a'), (2, 'b')" "values\n    (1, 'a'),\n    (2, 'b')"
     , lower "insert into t (a, b) values (1, 2) on conflict (a) do update set b = excluded.b where t.b <> excluded.b returning *" "insert into t\n    (a, b)\nvalues\n    (1, 2)\non conflict (a)\ndo update set\n    b = excluded.b\nwhere t.b <> excluded.b\nreturning *"

@@ -1,5 +1,5 @@
 cabal-version: 3.0
-name:          pgfmt-lint
+name:          pgstyle-lint
 version:       0.1.0.0
 synopsis:      The rules of docs/readability.md that a tool can check, for hopinion
 
@@ -14,11 +14,11 @@ library
   import:          shared
   hs-source-dirs:  src
   exposed-modules:
-    PgFmt.Lint
-    PgFmt.Lint.Rule.NamedFields
-    PgFmt.Lint.Rule.NamedTuples
-    PgFmt.Lint.Rule.SmallWhere
-    PgFmt.Lint.Syntax
+    PgStyle.Lint
+    PgStyle.Lint.Rule.NamedFields
+    PgStyle.Lint.Rule.NamedTuples
+    PgStyle.Lint.Rule.SmallWhere
+    PgStyle.Lint.Syntax
 
   build-depends:
     , base
@@ -29,11 +29,11 @@ library
     , syb
     , text
 
-executable pgfmt-lint
+executable pgstyle-lint
   import:         shared
   hs-source-dirs: app
-  main-is:        PgfmtLint.hs
-  ghc-options:    -main-is PgfmtLint.main
+  main-is:        PgstyleLint.hs
+  ghc-options:    -main-is PgstyleLint.main
   build-depends:
     , base
-    , pgfmt-lint
+    , pgstyle-lint

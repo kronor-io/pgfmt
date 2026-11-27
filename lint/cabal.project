@@ -1,5 +1,5 @@
--- pgfmt's hopinion rules, built apart from pgfmt so hopinion's dependencies stay
--- out of pgfmt's own plan. It must use the compiler that builds pgfmt: hopinion
+-- pgstyle's hopinion rules, built apart from pgstyle so hopinion's dependencies stay
+-- out of pgstyle's own plan. It must use the compiler that builds pgstyle: hopinion
 -- reads the .hie and .hi files that compiler writes.
 packages: .
 

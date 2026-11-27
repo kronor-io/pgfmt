@@ -3,7 +3,7 @@
 {-# LANGUAGE QuasiQuotes #-}
 
 -- | R1: a function's where block does not hide a program of its own.
-module PgFmt.Lint.Rule.SmallWhere (rule) where
+module PgStyle.Lint.Rule.SmallWhere (rule) where
 
 import Data.String.Interpolate (iii, __i)
 import Data.Text qualified as T
@@ -13,13 +13,13 @@ import Hopinion.Facts.Module (ModuleContext)
 import Hopinion.Parse (ParsedModule)
 import Hopinion.Rule
 import Hopinion.Rule.Id (RuleId (..))
-import PgFmt.Lint.Syntax
+import PgStyle.Lint.Syntax
 
 
 rule :: Rule
 rule =
     Rule
-        { ruleId = RuleId "PgfmtSmallWhere"
+        { ruleId = RuleId "PgstyleSmallWhere"
         , ruleText =
             [iii|
                 Keep a where block to at most twelve bindings; give the stages of a bigger
@@ -34,7 +34,7 @@ rule =
             [__i|
                 Find the stages the block computes and make each a top-level function with a signature and explicit arguments.
                 Keep small helpers local; the function that remains should read as the list of its stages.
-                Where the size is the right shape, say why in an [allow:PgfmtSmallWhere] annotation.
+                Where the size is the right shape, say why in an [allow:PgstyleSmallWhere] annotation.
             |]
         , ruleImpl = RuleImplModule (ModuleCheckOverNodes check)
         }

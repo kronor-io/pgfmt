@@ -2,7 +2,7 @@
 {-# LANGUAGE QuasiQuotes #-}
 
 -- | H1: a constructor with many fields is built by field name.
-module PgFmt.Lint.Rule.NamedFields (rule) where
+module PgStyle.Lint.Rule.NamedFields (rule) where
 
 import Data.Char (isUpper)
 import Data.Map.Strict qualified as Map
@@ -14,13 +14,13 @@ import Hopinion.Facts.Module (ModuleContext)
 import Hopinion.Parse (ParsedModule)
 import Hopinion.Rule
 import Hopinion.Rule.Id (RuleId (..))
-import PgFmt.Lint.Syntax
+import PgStyle.Lint.Syntax
 
 
 rule :: Rule
 rule =
     Rule
-        { ruleId = RuleId "PgfmtNamedFields"
+        { ruleId = RuleId "PgstyleNamedFields"
         , ruleText =
             [iii|
                 Apply a constructor to at most four positional arguments; name the fields

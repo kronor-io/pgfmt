@@ -7,9 +7,9 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
 import Options.Applicative
-import PgFmt
-import PgFmt.Haskell (Quoters, defaultQuoters, formatHaskell)
-import PgFmt.LibPgQuery (LibPgQueryError (..), PrettyOptions (..), defaultPrettyOptions)
+import PgStyle
+import PgStyle.Haskell (Quoters, defaultQuoters, formatHaskell)
+import PgStyle.LibPgQuery (LibPgQueryError (..), PrettyOptions (..), defaultPrettyOptions)
 import System.Exit (ExitCode (..), exitWith)
 import System.IO (stderr)
 
@@ -35,7 +35,7 @@ cli = do
                 <> metavar "auto|syntax|libpg-query"
                 <> value Auto
                 <> showDefaultWith (const "auto")
-                <> help "What lays out statements: pgfmt's own renderer (DML), libpg_query's pretty-printer (anything), or the first where it applies and the second for the rest"
+                <> help "What lays out statements: pgstyle's own renderer (DML), libpg_query's pretty-printer (anything), or the first where it applies and the second for the rest"
             )
     dialect <-
         option

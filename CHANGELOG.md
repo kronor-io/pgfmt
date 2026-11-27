@@ -2,20 +2,27 @@
 
 ## Unreleased
 
-* Each release also pushes an image, `ghcr.io/kronor-io/pgfmt`, for
+* pgfmt is now pgstyle, since another project is called pgfmt: the package,
+  the command, the library's modules (`PgStyle.*`), the flake's outputs
+  (`pgstyle`, `pgstyle-kronor`), the release tarballs, and the repository,
+  github.com/kronor-io/pgstyle. Nothing else about the command changes;
+  replace `pgfmt` with `pgstyle` where you run it. Versions up to 0.1.1.0
+  were released as pgfmt.
+
+* Each release also pushes an image, `ghcr.io/kronor-io/pgstyle`, for
   `linux/amd64` and `linux/arm64`, tagged with the version and `latest`. It
   holds the release's static binary and nothing else:
 
-      docker run --rm -v "$PWD:/work" -u "$(id -u):$(id -g)" ghcr.io/kronor-io/pgfmt --check migrations/*.sql
+      docker run --rm -v "$PWD:/work" -u "$(id -u):$(id -g)" ghcr.io/kronor-io/pgstyle --check migrations/*.sql
 
 * The `syntax` backend no longer writes `select` twice for a subquery with
   an explicit `all` (`a in (select all b from u)`), which the parse-tree check
   caught as an error.
 
-* `PgFmt.Layout` is split into modules along its sections: `Monad`,
+* `PgStyle.Layout` is split into modules along its sections: `Monad`,
   `Comments`, `Locations`, `Parens`, `Names`, `Expr`, `Dml` and `Ddl`.
   `docs/readability.md` says how the code is meant to read, and
-  `scripts/check` checks what a tool can: fourmolu, and pgfmt's hopinion rules
+  `scripts/check` checks what a tool can: fourmolu, and pgstyle's hopinion rules
   in `lint/`. CI runs it. The output is unchanged.
 
 * The `syntax` backend lays out more of the tables, indexes and `alter

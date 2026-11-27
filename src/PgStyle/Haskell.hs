@@ -3,11 +3,11 @@
 -- A small scanner finds the quasiquotes, skipping comments, string and
 -- character literals the way GHC's lexer does, so a @[singletonStatement|@
 -- inside a string or a comment is not mistaken for one. Each quasiquote whose
--- quoter is in 'Quoters' has its SQL laid out by "PgFmt.Render", which only
+-- quoter is in 'Quoters' has its SQL laid out by "PgStyle.Render", which only
 -- returns SQL that parses back to the same postgresql-syntax AST. Everything
 -- else in the file is kept as it is, and the result is scanned again to check
 -- that it holds the same quasiquotes and the same text around them.
-module PgFmt.Haskell (
+module PgStyle.Haskell (
     Quoters,
     defaultQuoters,
     QuasiQuote (..),
@@ -19,10 +19,10 @@ import Data.Char (isAlphaNum, isLower, isSpace, isUpper)
 import Data.List (sortOn)
 import Data.Text (Text)
 import Data.Text qualified as T
-import PgFmt.File (FileResult (..), Outcome (..), StatementReport (..))
-import PgFmt.File qualified as File
-import PgFmt.Render (FormatError (..))
-import PgFmt.Render qualified as Render
+import PgStyle.File (FileResult (..), Outcome (..), StatementReport (..))
+import PgStyle.File qualified as File
+import PgStyle.Render (FormatError (..))
+import PgStyle.Render qualified as Render
 
 
 -- | The quoters whose quasiquotes hold SQL to format, by unqualified name: a

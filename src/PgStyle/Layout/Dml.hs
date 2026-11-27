@@ -1,5 +1,5 @@
 -- | Selects, from clauses, and insert, update and delete.
-module PgFmt.Layout.Dml where
+module PgStyle.Layout.Dml where
 
 import Control.Monad (forM, unless, when, zipWithM)
 import Control.Monad.Reader (asks)
@@ -10,13 +10,13 @@ import Data.ProtoLens.Message (Message (..))
 import Data.Text (Text)
 import Data.Text qualified as T
 import Lens.Micro ((&), (.~), (^.))
-import PgFmt.Layout.Comments
-import PgFmt.Layout.Expr
-import PgFmt.Layout.Locations
-import PgFmt.Layout.Monad
-import PgFmt.Layout.Names
-import PgFmt.Layout.Parens
 import PgQuery qualified as Pg
+import PgStyle.Layout.Comments
+import PgStyle.Layout.Expr
+import PgStyle.Layout.Locations
+import PgStyle.Layout.Monad
+import PgStyle.Layout.Names
+import PgStyle.Layout.Parens
 import Prettyprinter (hardline, indent, nest, pretty, vsep, (<+>))
 
 
@@ -27,7 +27,7 @@ selectFirst s
     | Just w <- s ^. Pg.maybe'withClause = do
         i <- tokAt (fromIntegral (w ^. Pg.location))
         ok <- tokIs i "with"
-        unless ok (unsupported "a with clause pgfmt cannot find")
+        unless ok (unsupported "a with clause pgstyle cannot find")
         pure i
     | s ^. Pg.op /= Pg.SETOP_NONE = do
         l <- req "a set operation" (s ^. Pg.maybe'larg)
@@ -47,7 +47,7 @@ selectFirst s
                 if
                     | w == target -> pure j
                     | w `elem` skippable -> walk (j - 1)
-                    | otherwise -> unsupported "a select pgfmt cannot find the start of"
+                    | otherwise -> unsupported "a select pgstyle cannot find the start of"
         walk (i - 1)
 
 
@@ -123,7 +123,7 @@ selectParensPeek s = do
     go (f - 1) 0
 
 
--- | "PgFmt.Render"'s @renderSelectStmt@: a statement-level select, with
+-- | "PgStyle.Render"'s @renderSelectStmt@: a statement-level select, with
 -- however many parentheses around it.
 selStmt :: Pg.SelectStmt -> Int -> R D
 selStmt s 0 = selNoParens s
@@ -172,7 +172,7 @@ operands s = do
     lp <- selectParens 0 l
     rp <- selectParens 0 r
     let bare x n = n == 0 && (isJust (x ^. Pg.maybe'withClause) || not (null (x ^. Pg.sortClause)) || isJust (x ^. Pg.maybe'limitCount) || isJust (x ^. Pg.maybe'limitOffset) || not (null (x ^. Pg.lockingClause)))
-    when (bare l lp || bare r rp) (unsupported "a set operation operand pgfmt cannot read")
+    when (bare l lp || bare r rp) (unsupported "a set operation operand pgstyle cannot read")
     pure (Sel{stmt = l, parens = lp}, Sel{stmt = r, parens = rp})
 
 
@@ -189,12 +189,12 @@ setOperator s r = do
             Pg.SETOP_UNION -> "union"
             Pg.SETOP_INTERSECT -> "intersect"
             _ -> "except"
-    unless (op == expected && (s ^. Pg.all) == (modifier == Just "all")) (unsupported "a set operator pgfmt cannot find")
+    unless (op == expected && (s ^. Pg.all) == (modifier == Just "all")) (unsupported "a set operator pgstyle cannot find")
     d <- kw (T.unwords (op : toList modifier))
     pure (d, opTok)
 
 
--- | "PgFmt.Render"'s @renderSelectClause@ / @renderSimpleSelect@.
+-- | "PgStyle.Render"'s @renderSelectClause@ / @renderSimpleSelect@.
 selClause :: Pg.SelectStmt -> R D
 selClause s
     | s ^. Pg.op /= Pg.SETOP_NONE = do
@@ -238,7 +238,7 @@ targetPrefix mode s = do
                     if
                         | w == "on" -> pure j
                         | w == "(" -> findOn (j - 1)
-                        | otherwise -> unsupported "a distinct on pgfmt cannot read"
+                        | otherwise -> unsupported "a distinct on pgstyle cannot read"
             on <- findOn (i - 1)
             _ <- expectParen (on + 1)
             ds <- traverse (top >=> expr MP) exprs
@@ -280,7 +280,7 @@ targetForcesMultiLine n = case node n of
     _ -> pure False
 
 
--- | "PgFmt.Render"'s @renderBlockListWith@; with each item's first token,
+-- | "PgStyle.Render"'s @renderBlockListWith@; with each item's first token,
 -- for the comments before it.
 blockList :: D -> (a -> R D) -> (a -> R (Maybe Int)) -> [a] -> R D
 blockList prefix item first items = do
@@ -300,7 +300,7 @@ resTarget n = case node n of
         v <- req "a target" (rt ^. Pg.maybe'val)
         e <- top v
         pure (rt, e)
-    _ -> unsupported "a target pgfmt cannot read"
+    _ -> unsupported "a target pgstyle cannot read"
 
 
 targetWith :: (E -> R D) -> Pg.Node -> R D
@@ -311,7 +311,7 @@ targetWith render n = do
     pure (d <> a)
 
 
--- | "PgFmt.Render"'s @renderTargetEl@, @renderTargetElDoc@, and
+-- | "PgStyle.Render"'s @renderTargetEl@, @renderTargetElDoc@, and
 -- postgresql-syntax's own.
 targetEl, targetElDoc, targetElP :: Pg.Node -> R D
 targetEl = targetWith (expr MR)
@@ -339,7 +339,7 @@ targetAlias rt
     find i d = do
         t <- tokM i
         case t of
-            Nothing -> unsupported "an alias pgfmt cannot find"
+            Nothing -> unsupported "an alias pgstyle cannot find"
             Just tk
                 | d == 0
                 , identText tk == Just name -> do
@@ -351,7 +351,7 @@ targetAlias rt
                             Just n -> n.text `elem` [",", ")", ";"] || (n.isKeyword && T.toLower n.text `elem` clauseWords)
                     if ends then pure i else find (i + 1) d
                 | tk.text `elem` ["(", "["] -> find (i + 1) (d + 1)
-                | tk.text `elem` [")", "]"] -> if d == 0 then unsupported "an alias pgfmt cannot find" else find (i + 1) (d - 1)
+                | tk.text `elem` [")", "]"] -> if d == 0 then unsupported "an alias pgstyle cannot find" else find (i + 1) (d - 1)
                 | otherwise -> find (i + 1) d
 
 
@@ -367,7 +367,7 @@ depthBetween a b =
         pure if w `elem` ["(", "["] then 1 else if w `elem` [")", "]"] then -1 else 0
 
 
--- | "PgFmt.Render"'s @renderSelectWithParensMaybeWrap@.
+-- | "PgStyle.Render"'s @renderSelectWithParensMaybeWrap@.
 selMaybeWrap :: Sel -> R D
 selMaybeWrap sel = do
     inline <- selInline sel
@@ -380,7 +380,7 @@ selWrapped (Sel s n) = do
     pure ("(" <> nest indentSize (hardline <> inner) <> hardline <> ")")
 
 
--- | "PgFmt.Render"'s @renderSelectWithParensInline@.
+-- | "PgStyle.Render"'s @renderSelectWithParensInline@.
 selInline :: Sel -> R D
 selInline (Sel s n) = do
     inner <- if n <= 1 then selNoParensInline s else selInline (Sel s (n - 1))
@@ -540,7 +540,7 @@ groupClause s
                     ds <- traverse groupItem (g ^. Pg.content)
                     w <- kw "grouping sets"
                     pure (w <> " (" <> commaJoin ds <> ")")
-                _ -> unsupported "a grouping set pgfmt cannot read"
+                _ -> unsupported "a grouping set pgstyle cannot read"
         _ -> top n >>= expr MP
 
 
@@ -558,7 +558,7 @@ windowClause s
                 asK <- kw "as"
                 spec <- windowSpec w
                 pure (name <+> asK <+> spec)
-            _ -> unsupported "a window pgfmt cannot read"
+            _ -> unsupported "a window pgstyle cannot read"
         pure (Just (k <+> commaJoin ds))
 
 
@@ -577,14 +577,14 @@ sortClause items = do
                         [op] -> do
                             u <- kw "using"
                             pure (Just (u <+> pretty op))
-                        _ -> unsupported "a sort operator pgfmt cannot read"
+                        _ -> unsupported "a sort operator pgstyle cannot read"
                 _ -> pure Nothing
             nulls <- case sb ^. Pg.sortbyNulls of
                 Pg.SORTBY_NULLS_FIRST -> Just <$> kw "nulls first"
                 Pg.SORTBY_NULLS_LAST -> Just <$> kw "nulls last"
                 _ -> pure Nothing
             pure (spaceJoin (e : catMaybes [dir, nulls]))
-        _ -> unsupported "a sort pgfmt cannot read"
+        _ -> unsupported "a sort pgstyle cannot read"
     pure (k <+> commaJoin ds)
 
 
@@ -618,7 +618,7 @@ selectLimit multiLine s = do
         e <- top n
         start <- clauseStart n e
         w <- tokL (start - 1)
-        unless (w == "offset") (unsupported "an offset pgfmt cannot read")
+        unless (w == "offset") (unsupported "an offset pgstyle cannot read")
         ls <- nonEmptyLocs (locsNode n)
         after <- tokAt (maximum ls) >>= \i -> tokL (i + 1)
         when (after `elem` ["row", "rows"]) (unsupported "offset ... rows")
@@ -649,14 +649,14 @@ locking s
                             k <- kw "of"
                             ds <- forM (lc ^. Pg.lockedRels) \r -> case node r of
                                 Just (Pg.Node'RangeVar rv) -> relationName rv
-                                _ -> unsupported "a locked relation pgfmt cannot read"
+                                _ -> unsupported "a locked relation pgstyle cannot read"
                             pure (Just (k <+> commaJoin ds))
                 wait <- case lc ^. Pg.waitPolicy of
                     Pg.LockWaitSkip -> Just <$> kw "skip locked"
                     Pg.LockWaitError -> Just <$> kw "nowait"
                     _ -> pure Nothing
                 pure (spaceJoin (catMaybes [Just strength, rels, wait]))
-            _ -> unsupported "a locking clause pgfmt cannot read"
+            _ -> unsupported "a locking clause pgstyle cannot read"
         pure (Just (spaceJoin ds))
 
 
@@ -671,19 +671,19 @@ valuesRowsAt s = do
     when (isJust (s ^. Pg.maybe'withClause)) (unsupported "values with a with clause")
     rows <- forM (s ^. Pg.valuesLists) \r -> case node r of
         Just (Pg.Node'List l) -> pure (l ^. Pg.items)
-        _ -> unsupported "a values row pgfmt cannot read"
+        _ -> unsupported "a values row pgstyle cannot read"
     first <- selectFirst s
     let place _ [] = pure []
         place i (row : rest) = do
             close <- expectParen i
             unless (null rest) do
                 comma <- tokIs (close + 1) ","
-                unless comma (unsupported "values rows pgfmt cannot read")
+                unless comma (unsupported "values rows pgstyle cannot read")
             ((i, row) :) <$> place (close + 2) rest
     place (first + 1) rows
 
 
--- | "PgFmt.Render"'s @renderValuesClause@.
+-- | "PgStyle.Render"'s @renderValuesClause@.
 valuesClause :: Pg.SelectStmt -> R D
 valuesClause s = do
     rows <- valuesRowsAt s
@@ -695,7 +695,7 @@ valuesClause s = do
         commented <- commentsBetween open close
         pure (open, close, ds, commented)
     -- Each row on one line when every row fits and none has a comment in
-    -- it; otherwise one value per line, as "PgFmt.Render" always does.
+    -- it; otherwise one value per line, as "PgStyle.Render" always does.
     let oneLine = all (\(_, _, ds, commented) -> not commented && len (inlineRow ds) <= valuesRowInlineThreshold) laid
     docs <- forM (zip [(0 :: Int) ..] laid) \(i, (open, close, ds, commented)) -> do
         bracketed <-
@@ -719,7 +719,7 @@ valuesClause s = do
 
 
 -- | The longest @values@ row that goes on one line.
--- | "PgFmt.Render"'s: the most columns a function alias or an insert keeps
+-- | "PgStyle.Render"'s: the most columns a function alias or an insert keeps
 -- on one line.
 funcAliasInlineColumns, insertInlineColumns :: Int
 funcAliasInlineColumns = 3
@@ -808,7 +808,7 @@ cteParts n = case node n of
         asK <- kw "as"
         q <- req "a common table expression" (c ^. Pg.maybe'ctequery)
         pure (name <> cols <> " " <> asK <> " " <> maybe mempty (<> " ") mat, q)
-    _ -> unsupported "a common table expression pgfmt cannot read"
+    _ -> unsupported "a common table expression pgstyle cannot read"
 
 
 cte :: Bool -> Pg.Node -> R D
@@ -836,7 +836,7 @@ withP w = do
 -- From.
 ----------------------------------------------------------------------
 
--- | "PgFmt.Render"'s @renderFromClause@: on one line, unless a join (or a
+-- | "PgStyle.Render"'s @renderFromClause@: on one line, unless a join (or a
 -- long call or subquery) puts each item on its own.
 fromClause :: [Pg.Node] -> R D
 fromClause items = do
@@ -892,14 +892,14 @@ rangeFunctionCall rf = do
             fn : rest | all (isNothing . node) rest -> pure case node fn of
                 Just (Pg.Node'FuncCall f) -> Just f
                 _ -> Nothing
-            _ -> unsupported "a from-list function pgfmt cannot read"
-        _ -> unsupported "a from-list function pgfmt cannot read"
+            _ -> unsupported "a from-list function pgstyle cannot read"
+        _ -> unsupported "a from-list function pgstyle cannot read"
 
 
 rangeFunctionNode :: Pg.RangeFunction -> R Pg.Node
 rangeFunctionNode rf = case rf ^. Pg.functions of
     [item] | Just (Pg.Node'List l) <- node item, fn : _ <- l ^. Pg.items -> pure fn
-    _ -> unsupported "a from-list function pgfmt cannot read"
+    _ -> unsupported "a from-list function pgstyle cannot read"
 
 
 rangeSubselectSel :: Pg.RangeSubselect -> R Sel
@@ -985,7 +985,7 @@ tableSample :: Pg.RangeTableSample -> R D
 tableSample ts = do
     rel <- case ts ^. Pg.maybe'relation >>= node of
         Just (Pg.Node'RangeVar rv) -> relation rv
-        _ -> unsupported "a table sample pgfmt cannot read"
+        _ -> unsupported "a table sample pgstyle cannot read"
     at <- tokAt (fromIntegral (ts ^. Pg.location))
     open <- nextParen at
     close <- expectParen open
@@ -1010,7 +1010,7 @@ alias (Just a) i = do
     hasAs <- tokIs i "as"
     let nameTok = if hasAs then i + 1 else i
     t <- tokM nameTok
-    unless ((t >>= identText) == Just (a ^. Pg.aliasname)) (unsupported "an alias pgfmt cannot find")
+    unless ((t >>= identText) == Just (a ^. Pg.aliasname)) (unsupported "an alias pgstyle cannot find")
     name <- ident (a ^. Pg.aliasname)
     asK <- kw "as"
     cols <-
@@ -1023,7 +1023,7 @@ alias (Just a) i = do
     pure (" " <> (if hasAs then asK <> " " else mempty) <> name <> cols)
 
 
--- | "PgFmt.Render"'s @renderFuncAliasClauseDoc@: more than three columns go
+-- | "PgStyle.Render"'s @renderFuncAliasClauseDoc@: more than three columns go
 -- on their own lines.
 funcAlias :: Maybe Pg.Alias -> Int -> R D
 funcAlias Nothing _ = pure mempty
@@ -1049,13 +1049,13 @@ funcAliasClause mode rf i
         asK <- kw "as"
         (name, open) <- case rf ^. Pg.maybe'alias of
             Nothing -> do
-                unless hasAs (unsupported "a column definition list pgfmt cannot read")
+                unless hasAs (unsupported "a column definition list pgstyle cannot read")
                 pure (Nothing, i + 1)
             Just a -> do
                 unless (null (a ^. Pg.colnames)) (unsupported "an alias with both columns and definitions")
                 let nameTok = if hasAs then i + 1 else i
                 t <- tokM nameTok
-                unless ((t >>= identText) == Just (a ^. Pg.aliasname)) (unsupported "an alias pgfmt cannot find")
+                unless ((t >>= identText) == Just (a ^. Pg.aliasname)) (unsupported "an alias pgstyle cannot find")
                 n <- ident (a ^. Pg.aliasname)
                 pure (Just n, nameTok + 1)
         _ <- expectParen open
@@ -1065,7 +1065,7 @@ funcAliasClause mode rf i
                 c <- ident (cd ^. Pg.colname)
                 t <- req "a column definition" (cd ^. Pg.maybe'typeName) >>= typeName
                 pure (c <> " " <> t)
-            _ -> unsupported "a column definition pgfmt cannot read"
+            _ -> unsupported "a column definition pgstyle cannot read"
         pure (" " <> spaceJoin ([asK | hasAs] ++ toList name) <> " (" <> commaJoin defs <> ")")
 
 
@@ -1104,7 +1104,7 @@ funcTable mode rf = do
         Just (Pg.Node'CoalesceExpr _) -> expr mode e
         Just (Pg.Node'MinMaxExpr _) -> expr mode e
         Just (Pg.Node'SqlvalueFunction _) -> expr mode e
-        _ -> unsupported "a from-list function pgfmt cannot read"
+        _ -> unsupported "a from-list function pgstyle cannot read"
     o <- ordinalityD rf
     pure (d <> o)
 
@@ -1116,7 +1116,7 @@ subselectAlias rs sel = do
     alias (rs ^. Pg.maybe'alias) (close + 1)
 
 
--- | "PgFmt.Render"'s @renderTableRef@.
+-- | "PgStyle.Render"'s @renderTableRef@.
 tableRef :: Bool -> Pg.Node -> R D
 tableRef isFirst n = do
     pfx <- if isFirst then (<> " ") <$> kw "from" else pure mempty
@@ -1150,7 +1150,7 @@ tableRef isFirst n = do
         _ -> unsupported (nodeName n)
 
 
--- | "PgFmt.Render"'s @renderTableRefInline@.
+-- | "PgStyle.Render"'s @renderTableRefInline@.
 tableRefInline :: Pg.Node -> R D
 tableRefInline n = case node n of
     Just (Pg.Node'RangeVar rv) -> relation rv
@@ -1171,7 +1171,7 @@ tableRefInline n = case node n of
     _ -> unsupported (nodeName n)
 
 
--- | "PgFmt.Render"'s @renderTableRefDoc@, for the right side of a join.
+-- | "PgStyle.Render"'s @renderTableRefDoc@, for the right side of a join.
 tableRefDoc :: Pg.Node -> R D
 tableRefDoc n = case node n of
     Just (Pg.Node'RangeFunction rf) -> do
@@ -1229,7 +1229,7 @@ joinWords j r = do
     when (isJust (j ^. Pg.maybe'alias) || isJust (j ^. Pg.maybe'joinUsingAlias)) (unsupported "a join with an alias")
     rFirst <- tableRefFirst r
     isJoin <- tokIs (rFirst - 1) "join"
-    unless isJoin (unsupported "a join pgfmt cannot read")
+    unless isJoin (unsupported "a join pgstyle cannot read")
     let collect i acc = do
             w <- tokL i
             if w `elem` ["inner", "left", "right", "full", "outer", "natural", "cross"]
@@ -1248,15 +1248,15 @@ joinWords j r = do
             Pg.JOIN_FULL -> [["full"], ["full", "outer"]]
             _ -> []
         hasQual = isJust (j ^. Pg.maybe'quals) || not (null (j ^. Pg.usingClause))
-    unless (joinType `elem` expected) (unsupported "a join type pgfmt cannot read")
+    unless (joinType `elem` expected) (unsupported "a join type pgstyle cannot read")
     case kind of
-        NaturalJoin -> unless (j ^. Pg.isNatural && not hasQual) (unsupported "a natural join pgfmt cannot read")
-        CrossJoin -> unless (not (j ^. Pg.isNatural) && not hasQual && null joinType) (unsupported "a cross join pgfmt cannot read")
+        NaturalJoin -> unless (j ^. Pg.isNatural && not hasQual) (unsupported "a natural join pgstyle cannot read")
+        CrossJoin -> unless (not (j ^. Pg.isNatural) && not hasQual && null joinType) (unsupported "a cross join pgstyle cannot read")
         QualJoin -> unless (not (j ^. Pg.isNatural) && hasQual) (unsupported "a join without a condition")
     pure (ws ++ ["join"], kind)
 
 
--- | "PgFmt.Render"'s @renderJoinedTable@.
+-- | "PgStyle.Render"'s @renderJoinedTable@.
 joinedTable :: Pg.JoinExpr -> Int -> R D
 joinedTable j k
     | k > 0 = do
@@ -1291,7 +1291,7 @@ joinQual mode anchor j r = case j ^. Pg.maybe'quals of
                 w <- tokL i
                 t <- tokM i
                 case t of
-                    Nothing -> unsupported "a using pgfmt cannot find"
+                    Nothing -> unsupported "a using pgstyle cannot find"
                     _ | w == "using" -> pure i
                     _ -> find (i + 1)
         u <- find rFirst
@@ -1323,7 +1323,7 @@ joinP j k
 
 ----------------------------------------------------------------------
 
--- | "PgFmt.Render"'s @renderPreparableStmt@, for a common table
+-- | "PgStyle.Render"'s @renderPreparableStmt@, for a common table
 -- expression's body.
 preparable :: Pg.Node -> R D
 preparable n = case node n of
@@ -1413,12 +1413,12 @@ insertStmt s = do
         pure (k <> hardline)
 
 
--- | "PgFmt.Render"'s @renderInsertColumnList@.
+-- | "PgStyle.Render"'s @renderInsertColumnList@.
 insertColumns :: [Pg.Node] -> R D
 insertColumns cols = do
     ds <- forM cols \n -> case node n of
         Just (Pg.Node'ResTarget rt) -> setTarget rt
-        _ -> unsupported "an insert column pgfmt cannot read"
+        _ -> unsupported "an insert column pgstyle cannot read"
     first <- case cols of
         n : _ | Just (Pg.Node'ResTarget rt) <- node n -> tokAt (fromIntegral (rt ^. Pg.location))
         _ -> unsupported "an insert column list"
@@ -1460,14 +1460,14 @@ setItems (n : rest) = case node n of
                 (more, rest') = splitAt count rest
             others <- forM more \x -> case node x of
                 Just (Pg.Node'ResTarget r) -> pure r
-                _ -> unsupported "a multi-column assignment pgfmt cannot read"
+                _ -> unsupported "a multi-column assignment pgstyle cannot read"
             source <- req "a multi-column assignment" (m ^. Pg.maybe'source)
             (SetMany (rt : others) source :) <$> setItems rest'
         Just _ -> do
             v <- req "an assignment" (rt ^. Pg.maybe'val)
             (SetOne rt v :) <$> setItems rest
         Nothing -> unsupported "an assignment without a value"
-    _ -> unsupported "an assignment pgfmt cannot read"
+    _ -> unsupported "an assignment pgstyle cannot read"
 
 
 -- | An assignment's first token.
@@ -1482,7 +1482,7 @@ setFirst = \case
         | otherwise = pure Nothing
 
 
--- | "PgFmt.Render"'s @renderSetClause@.
+-- | "PgStyle.Render"'s @renderSetClause@.
 setClause :: SetItem -> R D
 setClause = \case
     SetOne rt v -> do
@@ -1519,7 +1519,7 @@ onConflict oc = do
                         case ie ^. Pg.maybe'expr of
                             Just x -> top x >>= expr MP
                             Nothing -> ident (ie ^. Pg.name)
-                    _ -> unsupported "an index element pgfmt cannot read"
+                    _ -> unsupported "an index element pgstyle cannot read"
                 w <- forM (inf ^. Pg.maybe'whereClause) \x -> do
                     k <- kw "where"
                     d <- top x >>= expr MP
@@ -1537,7 +1537,7 @@ onConflict oc = do
                     _ -> k <> hardline <> indent indentSize (vsep [if i < lastIdx then d <> "," else d | (i, d) <- zip [0 ..] docs])
             w <- traverse (condAligned 5 "where") (oc ^. Pg.maybe'whereClause)
             pure (maybe body (\wd -> body <> hardline <> wd) w)
-        _ -> unsupported "an on conflict pgfmt cannot read"
+        _ -> unsupported "an on conflict pgstyle cannot read"
     pure (header <> target <> hardline <> action)
 
 

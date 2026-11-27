@@ -5,8 +5,8 @@ import Data.IORef (modifyIORef', newIORef, readIORef)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
-import PgFmt
-import PgFmt.Haskell (Quoters, defaultQuoters, formatHaskell)
+import PgStyle
+import PgStyle.Haskell (Quoters, defaultQuoters, formatHaskell)
 import System.Exit (exitFailure)
 
 

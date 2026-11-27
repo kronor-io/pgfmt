@@ -1,6 +1,6 @@
 -- | Expressions, inline and wrapped, function calls, subqueries and
 -- conditions.
-module PgFmt.Layout.Expr where
+module PgStyle.Layout.Expr where
 
 import Control.Monad (forM, unless, when)
 import Control.Monad.Reader (local)
@@ -12,17 +12,17 @@ import Data.Maybe (catMaybes, fromMaybe, isJust)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Lens.Micro ((^.))
-import PgFmt.Layout.Comments
-import {-# SOURCE #-} PgFmt.Layout.Dml (selMaybeWrap, selP, selWrapped, selectParens, sortClause)
-import PgFmt.Layout.Locations
-import PgFmt.Layout.Monad
-import PgFmt.Layout.Names
-import PgFmt.Layout.Parens
 import PgQuery qualified as Pg
+import PgStyle.Layout.Comments
+import {-# SOURCE #-} PgStyle.Layout.Dml (selMaybeWrap, selP, selWrapped, selectParens, sortClause)
+import PgStyle.Layout.Locations
+import PgStyle.Layout.Monad
+import PgStyle.Layout.Names
+import PgStyle.Layout.Parens
 import Prettyprinter (align, hardline, hcat, nest, pretty, punctuate, vsep, (<+>))
 
 
--- | An expression on one line: "PgFmt.Render"'s @renderExpr@ ('MR'), its
+-- | An expression on one line: "PgStyle.Render"'s @renderExpr@ ('MR'), its
 -- @renderBExpr@ ('MB'), or postgresql-syntax's renderer ('MP').
 expr :: Mode -> E -> R D
 expr mode e
@@ -105,7 +105,7 @@ columnRef c = do
     parts <- forM (zip [0 ..] (c ^. Pg.fields)) \(k, f) -> case node f of
         Just (Pg.Node'String s) -> identAt (at + 2 * k) (s ^. Pg.sval)
         Just (Pg.Node'AStar _) -> txt "*"
-        _ -> unsupported "a column reference pgfmt cannot read"
+        _ -> unsupported "a column reference pgstyle cannot read"
     pure (hcat (punctuate "." parts))
 
 
@@ -158,7 +158,7 @@ typedLiteral tc = do
     i <- tokAt (fromIntegral (tn ^. Pg.location))
     w <- tokL i
     (ty, next) <- typeWords True i
-    unless (next == fst value) (unsupported "a typed literal pgfmt cannot read")
+    unless (next == fst value) (unsupported "a typed literal pgstyle cannot read")
     if w == "interval"
         then do
             (fields, _) <- intervalFields (fst value + 1)
@@ -176,7 +176,7 @@ operatorText a = do
     source <- tokAt (fromIntegral (a ^. Pg.location)) >>= tokL
     if source == op || (op == "<>" && source == "!=")
         then pure source
-        else unsupported "an operator pgfmt cannot find in the source"
+        else unsupported "an operator pgstyle cannot find in the source"
 
 
 jsonOps :: [Text]
@@ -210,7 +210,7 @@ aExpr mode e a = case a ^. Pg.kind of
         op <- operatorText a
         opTok <- tokAt (fromIntegral (a ^. Pg.location))
         subType <- tokL (opTok + 1)
-        unless (subType `elem` ["any", "some", "all"]) (unsupported "an any/all pgfmt cannot read")
+        unless (subType `elem` ["any", "some", "all"]) (unsupported "an any/all pgstyle cannot read")
         _ <- expectParen (opTok + 2)
         l <- req "an any/all" (a ^. Pg.maybe'lexpr) >>= child e.en
         r <- req "an any/all" (a ^. Pg.maybe'rexpr) >>= child e.en
@@ -260,7 +260,7 @@ aExpr mode e a = case a ^. Pg.kind of
             ["!~~"] -> pure "not like"
             ["~~*"] -> pure "ilike"
             ["!~~*"] -> pure "not ilike"
-            _ -> unsupported "a like pgfmt cannot read"
+            _ -> unsupported "a like pgstyle cannot read"
         l <- req "a like" (a ^. Pg.maybe'lexpr) >>= child e.en
         rn <- req "a like" (a ^. Pg.maybe'rexpr)
         case node rn of
@@ -279,7 +279,7 @@ aExpr mode e a = case a ^. Pg.kind of
             symmetric = k `elem` [Pg.AEXPR_BETWEEN_SYM, Pg.AEXPR_NOT_BETWEEN_SYM]
             afterBetween = if w == "not" then i + 2 else i + 1
         asym <- tokIs afterBetween "asymmetric"
-        when (asym || (w /= "between" && not (w == "not" && w1 == "between"))) (unsupported "a between pgfmt cannot read")
+        when (asym || (w /= "between" && not (w == "not" && w1 == "between"))) (unsupported "a between pgstyle cannot read")
         l <- req "a between" (a ^. Pg.maybe'lexpr) >>= child e.en
         (lo, hi) <- case a ^. Pg.maybe'rexpr >>= node of
             Just (Pg.Node'List xs) | [x, y] <- xs ^. Pg.items -> (,) <$> child e.en x <*> child e.en y
@@ -292,7 +292,7 @@ aExpr mode e a = case a ^. Pg.kind of
                 then (,) <$> expr MP lo <*> expr MP hi
                 else (,) <$> expr MB lo <*> expr MR hi
         pure (ld <+> bk <+> lod <+> andK <+> hid)
-    _ -> unsupported "an operator expression pgfmt does not lay out"
+    _ -> unsupported "an operator expression pgstyle does not lay out"
 
 
 boolExpr :: Mode -> E -> Pg.BoolExpr -> R D
@@ -312,7 +312,7 @@ boolExpr mode e b = case b ^. Pg.boolop of
                         , null (s ^. Pg.operName) -> do
                             test <- req "a not in" (s ^. Pg.maybe'testexpr) >>= child arg.en
                             inSubLink mode test s True
-                    _ -> unsupported "a not pgfmt cannot read"
+                    _ -> unsupported "a not pgstyle cannot read"
             else do
                 k <- kw "not"
                 d <- expr mode arg
@@ -410,7 +410,7 @@ sqlValueFunction f = do
         Pg.SVFOP_SESSION_USER -> kw "session_user"
         Pg.SVFOP_CURRENT_CATALOG -> kw "current_catalog"
         Pg.SVFOP_CURRENT_SCHEMA -> kw "current_schema"
-        _ -> unsupported "an SQL value function pgfmt does not know"
+        _ -> unsupported "an SQL value function pgstyle does not know"
 
 
 -- | @coalesce(a, b)@, @greatest(a, b)@: in 'MP', postgresql-syntax puts a
@@ -485,7 +485,7 @@ indirection mode p els = mconcat <$> traverse el els
             | otherwise -> do
                 i <- maybe (unsupported "a subscript") (child p >=> expr mode) (ix ^. Pg.maybe'uidx)
                 pure ("[" <> i <> "]")
-        _ -> unsupported "an indirection pgfmt cannot read"
+        _ -> unsupported "an indirection pgstyle cannot read"
 
 
 caseInline :: Mode -> E -> Pg.CaseExpr -> R D
@@ -499,7 +499,7 @@ caseInline mode e c = do
             whenK <- kw "when"
             thenK <- kw "then"
             pure (" " <> whenK <+> cond <+> thenK <+> result)
-        _ -> unsupported "a case branch pgfmt cannot read"
+        _ -> unsupported "a case branch pgstyle cannot read"
     def <- case c ^. Pg.maybe'defresult of
         Nothing -> pure mempty
         Just d -> do
@@ -574,7 +574,7 @@ classifyCall f = do
                         sorted <- sortByStart keyed
                         if all (\(k, _) -> k `elem` ["from", "for"]) sorted
                             then pure (Substring x sorted)
-                            else unsupported "a substring pgfmt cannot read"
+                            else unsupported "a substring pgstyle cannot read"
                 ([_, fn], _)
                     | fn `elem` ["btrim", "ltrim", "rtrim"]
                     , sqlSyntax -> do
@@ -587,7 +587,7 @@ classifyCall f = do
                             [s, chars]
                                 | hasFrom -> pure Trim{modifier, chars = Just chars, hasFrom = True, strings = [s]}
                                 | otherwise -> pure Trim{modifier, chars = Nothing, hasFrom = False, strings = [s, chars]}
-                            _ -> unsupported "a trim pgfmt cannot read"
+                            _ -> unsupported "a trim pgstyle cannot read"
                 (["pg_catalog", "overlay"], [x, placing, from]) | sqlSyntax -> pure Overlay{string = x, placing, from, for = Nothing}
                 (["pg_catalog", "overlay"], [x, placing, from, for]) | sqlSyntax -> pure Overlay{string = x, placing, from, for = Just for}
                 (["pg_catalog", "timezone"], [zone, x]) | sqlSyntax -> pure (AtTimeZone x zone)
@@ -781,7 +781,7 @@ afterCallParen f words' = do
     let find i = do
             t <- tokM i
             case t of
-                Nothing -> unsupported "a call's clause pgfmt cannot find"
+                Nothing -> unsupported "a call's clause pgstyle cannot find"
                 Just _ -> do
                     ws <- traverse (\k -> tokL (i + k)) [0 .. length words' - 1]
                     if ws == words' then pure (i + length words') else find (i + 1)
@@ -992,22 +992,22 @@ subLink mode e s = case s ^. Pg.subLinkType of
             _ -> unsupported "a schema-qualified operator"
         at <- tokAt (fromIntegral (s ^. Pg.location))
         source <- tokL at
-        unless (source == op || (op == "<>" && source == "!=")) (unsupported "an operator pgfmt cannot find")
+        unless (source == op || (op == "<>" && source == "!=")) (unsupported "an operator pgstyle cannot find")
         subType <- tokL (at + 1)
-        unless (subType `elem` ["any", "some", "all"]) (unsupported "an any/all pgfmt cannot read")
+        unless (subType `elem` ["any", "some", "all"]) (unsupported "an any/all pgstyle cannot read")
         arg <- req "an any" (s ^. Pg.maybe'testexpr) >>= child e.en
         ad <- expr mode arg
         st <- kw subType
         q <- subquery
         pure (ad <+> pretty source <+> st <+> q)
-    _ -> unsupported "a subquery pgfmt does not lay out"
+    _ -> unsupported "a subquery pgstyle does not lay out"
   where
     subquery = do
         sel <- subLinkSel s
         if mode == MP then selP sel else selMaybeWrap sel
 
 
--- | @x in (select ...)@: "PgFmt.Render" hands its subquery to
+-- | @x in (select ...)@: "PgStyle.Render" hands its subquery to
 -- postgresql-syntax's renderer whatever its length.
 inSubLink :: Mode -> E -> Pg.SubLink -> Bool -> R D
 inSubLink mode arg s negated = do
@@ -1019,7 +1019,7 @@ inSubLink mode arg s negated = do
 
 
 ----------------------------------------------------------------------
--- Expressions, wrapped: "PgFmt.Render"'s rules, over libpg_query's nodes.
+-- Expressions, wrapped: "PgStyle.Render"'s rules, over libpg_query's nodes.
 ----------------------------------------------------------------------
 
 -- | One parenthesis level off an expression, as postgresql-syntax's
@@ -1229,7 +1229,7 @@ hasPairShapedCall e = do
         Nothing -> pure False
 
 
--- | "PgFmt.Render"'s: the fewest arguments a call laid out as key/value
+-- | "PgStyle.Render"'s: the fewest arguments a call laid out as key/value
 -- pairs has.
 keyValueMinArguments :: Int
 keyValueMinArguments = 4
@@ -1471,7 +1471,7 @@ arrayWrapped e a = do
                             se <- child e.en n
                             k <- kw "array"
                             (k <>) <$> arrayWrapped se sub
-                        _ -> unsupported "a nested array pgfmt cannot read"
+                        _ -> unsupported "a nested array pgstyle cannot read"
                     else traverse (child e.en >=> exprMaybeWrap) els
             keyword <- arrayKeyword a
             at <- tokAt (fromIntegral (a ^. Pg.location))
@@ -1491,7 +1491,7 @@ caseWrapped e c = do
             whenK <- kw "when"
             thenK <- kw "then"
             pure (hardline <> whenK <+> cond <+> thenK <+> result)
-        _ -> unsupported "a case branch pgfmt cannot read"
+        _ -> unsupported "a case branch pgstyle cannot read"
     def <- case c ^. Pg.maybe'defresult of
         Nothing -> pure mempty
         Just d -> do
@@ -1530,7 +1530,7 @@ exprForceSubqueryWrap e
             Nothing -> exprMaybeWrap e
 
 
--- | A select target or SET value: "PgFmt.Render"'s @renderExprDoc@.
+-- | A select target or SET value: "PgStyle.Render"'s @renderExprDoc@.
 exprDoc :: E -> R D
 exprDoc e = do
     found <- topLevelFuncApp e
@@ -1613,7 +1613,7 @@ condPlain anchor keyword n = do
         [] -> pure mempty
 
 
--- | "PgFmt.Render"'s @splitOnAnd@, deciding on the lower-case rendering and
+-- | "PgStyle.Render"'s @splitOnAnd@, deciding on the lower-case rendering and
 -- cutting the one in the requested case (the same text but for the case of
 -- its keywords).
 splitOnAnd :: Text -> Text -> [Text]

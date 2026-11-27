@@ -4,9 +4,9 @@
 -- The keywords of a clause are the source's own words (@temp@ or
 -- @temporary@, an explicit @on delete no action@), in the keyword case;
 -- names, types and expressions come from the tree, as in DML. Anything
--- else (storage options pgfmt does not know, @exclude@, ...) is not laid
+-- else (storage options pgstyle does not know, @exclude@, ...) is not laid
 -- out.
-module PgFmt.Layout.Ddl where
+module PgStyle.Layout.Ddl where
 
 import Control.Monad (forM, forM_, unless, when, zipWithM)
 import Control.Monad.Reader (asks)
@@ -18,13 +18,13 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Lens.Micro ((&), (.~), (^.))
-import PgFmt.Layout.Comments
-import PgFmt.Layout.Dml
-import PgFmt.Layout.Expr
-import PgFmt.Layout.Monad
-import PgFmt.Layout.Names
-import PgFmt.Layout.Parens
 import PgQuery qualified as Pg
+import PgStyle.Layout.Comments
+import PgStyle.Layout.Dml
+import PgStyle.Layout.Expr
+import PgStyle.Layout.Monad
+import PgStyle.Layout.Names
+import PgStyle.Layout.Parens
 import Prettyprinter (hardline, nest, pretty, vsep, (<+>))
 
 
@@ -57,7 +57,7 @@ wordsRun a b = do
                 | tk.text == "-" -> pure (Glue, "-")
                 | tk.kind `elem` [Pg.ICONST, Pg.FCONST] -> pure (Word, pretty (T.toLower tk.text))
                 | tk.isKeyword && tk.kind /= Pg.IDENT -> (Word,) <$> kw (T.toLower tk.text)
-            _ -> unsupported "a clause pgfmt cannot read"
+            _ -> unsupported "a clause pgstyle cannot read"
     pure (joined pieces)
   where
     joined = \case
@@ -85,7 +85,7 @@ tailRun a b
 nameList :: Int -> [Text] -> R (D, Int)
 nameList open names = do
     close <- expectParen open
-    unless (not (null names) && close == open + 2 * length names) (unsupported "a list of names pgfmt cannot read")
+    unless (not (null names) && close == open + 2 * length names) (unsupported "a list of names pgstyle cannot read")
     ds <- zipWithM (\k n -> identAt (open + 1 + 2 * k) n) [0 ..] names
     pure ("(" <> commaJoin ds <> ")", close + 1)
 
@@ -117,7 +117,7 @@ createTable c = do
     rv <- req "a create table" (c ^. Pg.maybe'relation)
     when
         (isJust (c ^. Pg.maybe'ofTypename) || (not (null (c ^. Pg.inhRelations)) && isNothing (c ^. Pg.maybe'partbound)))
-        (unsupported "a create table pgfmt does not lay out")
+        (unsupported "a create table pgstyle does not lay out")
     Relation{name, at = relAt, after = open} <- relationAt rv
     header <- wordsRun 0 relAt
     if isJust (c ^. Pg.maybe'partbound)
@@ -131,16 +131,16 @@ partitionOf :: Pg.CreateStmt -> D -> Int -> R D
 partitionOf c head' at = do
     when
         (not (null (c ^. Pg.tableElts)) || isJust (c ^. Pg.maybe'partspec))
-        (unsupported "a create table pgfmt does not lay out")
+        (unsupported "a create table pgstyle does not lay out")
     parent <- case c ^. Pg.inhRelations of
         [p] | Just (Pg.Node'RangeVar rv) <- node p -> pure rv
-        _ -> unsupported "a create table pgfmt cannot read"
+        _ -> unsupported "a create table pgstyle cannot read"
     isPartition <- (&&) <$> tokIs at "partition" <*> tokIs (at + 1) "of"
     Relation{name = pname, at = pAt, after = pAfter} <- relationAt parent
-    unless (isPartition && pAt == at + 2) (unsupported "a create table pgfmt cannot read")
+    unless (isPartition && pAt == at + 2) (unsupported "a create table pgstyle cannot read")
     w <- wordsRun at pAt
     end <- (+ 1) <$> lastTok
-    unless (pAfter < end) (unsupported "a create table pgfmt cannot read")
+    unless (pAfter < end) (unsupported "a create table pgstyle cannot read")
     bound <- looseRun pAfter end
     b1 <- brk mempty at
     b2 <- brk mempty pAfter
@@ -155,12 +155,12 @@ tableBody c head' open = do
     let elts = c ^. Pg.tableElts
     starts <- traverse elementStart elts
     case starts of
-        [] -> unless (close == open + 1) (unsupported "a create table pgfmt cannot read")
+        [] -> unless (close == open + 1) (unsupported "a create table pgstyle cannot read")
         s0 : rest -> do
-            unless (s0 == open + 1) (unsupported "a create table pgfmt cannot read")
+            unless (s0 == open + 1) (unsupported "a create table pgstyle cannot read")
             forM_ rest \s -> do
                 comma <- tokIs (s - 1) ","
-                unless comma (unsupported "a create table pgfmt cannot read")
+                unless comma (unsupported "a create table pgstyle cannot read")
     let ends = map (subtract 1) (drop 1 starts) ++ [close]
     ds <- forM (zip3 elts starts ends) \(el, s, e) -> tableElement el s e
     -- A blank line between two elements is kept, as between values rows.
@@ -183,9 +183,9 @@ elementStart el = case node el of
         rv <- req "a like clause" (l ^. Pg.maybe'relation)
         at <- tokAt (fromIntegral (rv ^. Pg.location))
         isLike <- tokIs (at - 1) "like"
-        unless isLike (unsupported "a like clause pgfmt cannot read")
+        unless isLike (unsupported "a like clause pgstyle cannot read")
         pure (at - 1)
-    _ -> unsupported "a table element pgfmt cannot read"
+    _ -> unsupported "a table element pgstyle cannot read"
 
 
 -- | A column, constraint or @like@ clause, from token @s@ to before @e@.
@@ -199,7 +199,7 @@ tableElement el s e = case node el of
         Relation{name, after} <- relationAt rv
         opts <- tailRun after e
         pure (k <+> name <> opts)
-    _ -> unsupported "a table element pgfmt cannot read"
+    _ -> unsupported "a table element pgstyle cannot read"
 
 
 columnDef :: Pg.ColumnDef -> Int -> Int -> R D
@@ -211,15 +211,15 @@ columnDef cd s e = do
             || not (null (cd ^. Pg.fdwoptions))
             || isJust (cd ^. Pg.maybe'rawDefault)
         )
-        (unsupported "a column pgfmt does not lay out")
+        (unsupported "a column pgstyle does not lay out")
     name <- identAt s (cd ^. Pg.colname)
     tn <- req "a column" (cd ^. Pg.maybe'typeName)
     tyAt <- tokAt (fromIntegral (tn ^. Pg.location))
-    unless (tyAt == s + 1) (unsupported "a column pgfmt cannot read")
+    unless (tyAt == s + 1) (unsupported "a column pgstyle cannot read")
     ty <- typeName tn
     ks <- forM (cd ^. Pg.constraints) \k -> case node k of
         Just (Pg.Node'Constraint x) -> (x,) <$> tokAt (fromIntegral (x ^. Pg.location))
-        _ -> unsupported "a column constraint pgfmt cannot read"
+        _ -> unsupported "a column constraint pgstyle cannot read"
     let kends = map snd (drop 1 ks) ++ [e]
     kds <- forM (zip ks kends) \((x, a), b) -> constraint x a b
     pure (spaceJoin (name : ty : kds))
@@ -231,7 +231,7 @@ constraint x a b
     | T.null (x ^. Pg.conname) = constraintBody 0 x a b
     | otherwise = do
         isCon <- tokIs a "constraint"
-        unless isCon (unsupported "a constraint pgfmt cannot read")
+        unless isCon (unsupported "a constraint pgstyle cannot read")
         k <- kw "constraint"
         n <- identAt (a + 1) (x ^. Pg.conname)
         -- Comments between the name and the body: the body goes on the
@@ -255,7 +255,7 @@ constraintBody before x a b = case x ^. Pg.contype of
     k | k `elem` [Pg.CONSTR_ATTR_DEFERRABLE, Pg.CONSTR_ATTR_NOT_DEFERRABLE, Pg.CONSTR_ATTR_DEFERRED, Pg.CONSTR_ATTR_IMMEDIATE] -> wordsRun a b
     Pg.CONSTR_DEFAULT -> do
         isDefault <- tokIs a "default"
-        unless isDefault (unsupported "a default pgfmt cannot read")
+        unless isDefault (unsupported "a default pgstyle cannot read")
         k <- kw "default"
         ex <- req "a default" (x ^. Pg.maybe'rawExpr)
         d <- ddlExpr ex
@@ -285,7 +285,7 @@ constraintBody before x a b = case x ^. Pg.contype of
                 || isJust (x ^. Pg.maybe'whereClause)
                 || x ^. Pg.withoutOverlaps
             )
-            (unsupported "a key pgfmt does not lay out")
+            (unsupported "a key pgstyle does not lay out")
         if
             | not (T.null (x ^. Pg.indexname)) -> do
                 -- @primary key using index i@: a long one breaks before
@@ -311,7 +311,7 @@ constraintBody before x a b = case x ^. Pg.contype of
     Pg.CONSTR_FOREIGN -> do
         when
             (not (null (x ^. Pg.fkDelSetCols)) || x ^. Pg.fkWithPeriod || x ^. Pg.pkWithPeriod)
-            (unsupported "a foreign key pgfmt does not lay out")
+            (unsupported "a foreign key pgstyle does not lay out")
         (lead, refAt) <-
             if null (x ^. Pg.fkAttrs)
                 then pure (mempty, a)
@@ -322,11 +322,11 @@ constraintBody before x a b = case x ^. Pg.contype of
                     (l, after) <- nameList open names
                     pure (w <+> l, after)
         isRef <- tokIs refAt "references"
-        unless isRef (unsupported "a foreign key pgfmt cannot read")
+        unless isRef (unsupported "a foreign key pgstyle cannot read")
         k <- kw "references"
         pk <- req "a foreign key" (x ^. Pg.maybe'pktable)
         Relation{name, at = pkAt, after} <- relationAt pk
-        unless (pkAt == refAt + 1) (unsupported "a foreign key pgfmt cannot read")
+        unless (pkAt == refAt + 1) (unsupported "a foreign key pgstyle cannot read")
         (cols, rest) <-
             if null (x ^. Pg.pkAttrs)
                 then pure (mempty, after)
@@ -339,14 +339,14 @@ constraintBody before x a b = case x ^. Pg.contype of
                 | null (x ^. Pg.fkAttrs) -> refs
                 | before + len (lead <+> refs) <= foreignKeyInlineThreshold -> lead <+> refs
                 | otherwise -> nest indentSize (lead <> hardline <> refs)
-    _ -> unsupported "a constraint pgfmt does not lay out"
+    _ -> unsupported "a constraint pgstyle does not lay out"
   where
     parenWithin = do
         open <- nextParen a
-        unless (open < b) (unsupported "a constraint pgfmt cannot read")
+        unless (open < b) (unsupported "a constraint pgstyle cannot read")
         pure open
     findUsing j
-        | j >= b = unsupported "a key pgfmt cannot read"
+        | j >= b = unsupported "a key pgstyle cannot read"
         | otherwise = do
             u <- tokIs j "using"
             i <- tokIs (j + 1) "index"
@@ -457,7 +457,7 @@ tableTail c from = do
                     , null (pe ^. Pg.collation)
                     , null (pe ^. Pg.opclass) ->
                         pure (pe ^. Pg.name)
-                _ -> unsupported "a partition key pgfmt does not lay out"
+                _ -> unsupported "a partition key pgstyle does not lay out"
             (l, after) <- nameList open names
             post <- tailRun after end
             pure (pre <> " " <> w <+> l <> post)
@@ -478,7 +478,7 @@ createView v = do
             from <- case ws of
                 ["with", m, "check", "option"] | m `elem` ["local", "cascaded"] -> pure (end - 3)
                 [_, "with", "check", "option"] -> pure (end - 2)
-                _ -> unsupported "a check option pgfmt cannot read"
+                _ -> unsupported "a check option pgstyle cannot read"
             Just <$> wordsRun from (end + 1)
         _ -> pure Nothing
     asQuery rv aliases q checkOption
@@ -487,7 +487,7 @@ createView v = do
 -- | @create table ... as@ and @create materialized view ... as@.
 createTableAs :: Pg.CreateTableAsStmt -> R D
 createTableAs c = do
-    unless (c ^. Pg.objtype `elem` [Pg.OBJECT_TABLE, Pg.OBJECT_MATVIEW]) (unsupported "a create as pgfmt does not lay out")
+    unless (c ^. Pg.objtype `elem` [Pg.OBJECT_TABLE, Pg.OBJECT_MATVIEW]) (unsupported "a create as pgstyle does not lay out")
     when (c ^. Pg.isSelectInto) (unsupported "select into")
     into <- req "a create as" (c ^. Pg.maybe'into)
     when
@@ -495,7 +495,7 @@ createTableAs c = do
             || not (T.null (into ^. Pg.accessMethod))
             || not (T.null (into ^. Pg.tableSpaceName))
         )
-        (unsupported "a create as pgfmt does not lay out")
+        (unsupported "a create as pgstyle does not lay out")
     rv <- req "a create as" (into ^. Pg.maybe'rel)
     cols <- strsOf (into ^. Pg.colNames)
     q <- req "a create as" (c ^. Pg.maybe'query)
@@ -529,7 +529,7 @@ asQuery rv cols q after = do
     asK <- kw "as"
     s <- case node q of
         Just (Pg.Node'SelectStmt s) -> pure s
-        _ -> unsupported "a query pgfmt does not lay out"
+        _ -> unsupported "a query pgstyle does not lay out"
     k <- selectParens 0 s
     body <- selStmt s k
     first <- selectFirst s
@@ -541,7 +541,7 @@ asQuery rv cols q after = do
         case t of
             Just tk | T.toLower tk.text == "as" -> pure j
             Just tk | tk.isKeyword && tk.kind /= Pg.IDENT -> findAs (j + 1)
-            _ -> unsupported "a create as pgfmt cannot read"
+            _ -> unsupported "a create as pgstyle cannot read"
 
 
 -- | The top-level commas from token @a@ to before @b@: where each of the
@@ -570,11 +570,11 @@ createIndex ix = do
         ( not (T.null (ix ^. Pg.tableSpace))
             || not (null (ix ^. Pg.excludeOpNames))
         )
-        (unsupported "an index pgfmt does not lay out")
+        (unsupported "an index pgstyle does not lay out")
     rv <- req "an index" (ix ^. Pg.maybe'relation)
     Relation{name = rel, at = relAt, after = afterRel} <- relationAt rv
     isOn <- tokIs (relAt - 1) "on"
-    unless isOn (unsupported "an index pgfmt cannot read")
+    unless isOn (unsupported "an index pgstyle cannot read")
     let named = not (T.null (ix ^. Pg.idxname))
         nameAt = relAt - 2
     header <- wordsRun 0 (if named then nameAt else relAt - 1)
@@ -591,11 +591,11 @@ createIndex ix = do
             else pure (mempty, afterRel)
     close <- expectParen open
     starts <- partsBetween (open + 1) close
-    unless (length starts == length (ix ^. Pg.indexParams)) (unsupported "an index pgfmt cannot read")
+    unless (length starts == length (ix ^. Pg.indexParams)) (unsupported "an index pgstyle cannot read")
     let ends = map (subtract 1) (drop 1 starts) ++ [close]
     cols <- forM (zip3 (ix ^. Pg.indexParams) starts ends) \(p, s, e) -> case node p of
         Just (Pg.Node'IndexElem el) -> indexElem el s e
-        _ -> unsupported "an index column pgfmt cannot read"
+        _ -> unsupported "an index column pgstyle cannot read"
     whereAt <- maybe (pure Nothing) (clauseAt [["where"]]) (ix ^. Pg.maybe'whereClause)
     end <- (+ 1) <$> lastTok
     between <- indexTail ix (close + 1) (fromMaybe end whereAt)
@@ -613,7 +613,7 @@ indexTail :: Pg.IndexStmt -> Int -> Int -> R D
 indexTail ix from to = do
     included <- forM (ix ^. Pg.indexIncludingParams) \p -> case node p of
         Just (Pg.Node'IndexElem el) | isNothing (el ^. Pg.maybe'expr) -> pure (el ^. Pg.name)
-        _ -> unsupported "an index pgfmt does not lay out"
+        _ -> unsupported "an index pgstyle does not lay out"
     let go j
             | j >= to = pure []
             | otherwise = do
@@ -639,7 +639,7 @@ indexTail ix from to = do
 -- expression, its operator class, its order.
 indexElem :: Pg.IndexElem -> Int -> Int -> R D
 indexElem el s e = do
-    unless (null (el ^. Pg.collation) && null (el ^. Pg.opclassopts) && T.null (el ^. Pg.indexcolname)) (unsupported "an index column pgfmt does not lay out")
+    unless (null (el ^. Pg.collation) && null (el ^. Pg.opclassopts) && T.null (el ^. Pg.indexcolname)) (unsupported "an index column pgstyle does not lay out")
     (d, next) <- case el ^. Pg.maybe'expr of
         Nothing -> do
             n <- identAt s (el ^. Pg.name)
@@ -666,7 +666,7 @@ indexElem el s e = do
 -- followed by its comma.
 alterTable :: Pg.AlterTableStmt -> R D
 alterTable a = do
-    unless (a ^. Pg.objtype == Pg.OBJECT_TABLE) (unsupported "an alter pgfmt does not lay out")
+    unless (a ^. Pg.objtype == Pg.OBJECT_TABLE) (unsupported "an alter pgstyle does not lay out")
     rv <- req "an alter table" (a ^. Pg.maybe'relation)
     Relation{name = rel, at = relAt, after = afterRel} <- relationAt rv
     header <- wordsRun 0 relAt
@@ -674,11 +674,11 @@ alterTable a = do
     starts <- partsBetween afterRel end
     let cmds = a ^. Pg.cmds
         ends = map (subtract 1) (drop 1 starts) ++ [end]
-    unless (length starts == length cmds) (unsupported "an alter table pgfmt cannot read")
+    unless (length starts == length cmds) (unsupported "an alter table pgstyle cannot read")
     ds <- forM (zip3 cmds starts ends) \(c, s, e) -> do
         cmd <- case node c of
             Just (Pg.Node'AlterTableCmd x) -> pure x
-            _ -> unsupported "an alter table pgfmt cannot read"
+            _ -> unsupported "an alter table pgstyle cannot read"
         alterCmd cmd s e
     rows <- commaRows KeepBlankLines (zip starts ds)
     pure (header <+> rel <> nest indentSize rows)
@@ -740,11 +740,11 @@ alterCmd c s e = case c ^. Pg.subtype of
             _ -> cannot
         t' <- tailRun (close + 1) e
         pure (w <+> opts <> t')
-    _ -> unsupported "an alter table action pgfmt does not lay out"
+    _ -> unsupported "an alter table action pgstyle does not lay out"
   where
     def = c ^. Pg.maybe'def >>= node
     cannot :: R a
-    cannot = unsupported "an alter table action pgfmt cannot read"
+    cannot = unsupported "an alter table action pgstyle cannot read"
     -- The named column, constraint or trigger: after the keywords that
     -- start the action.
     nameToken = go (s + 1)
@@ -796,7 +796,7 @@ looseRun a b = do
                 | tk.text == "." -> pure (Dot, ".")
                 | tk.isKeyword && tk.kind /= Pg.IDENT -> (Word,) <$> kw (T.toLower tk.text)
                 | otherwise -> pure (Word, raw tk.text)
-            Nothing -> unsupported "a clause pgfmt cannot read"
+            Nothing -> unsupported "a clause pgstyle cannot read"
     pure case pieces of
         [] -> mempty
         (k, d) : rest -> d <> go k rest
@@ -828,7 +828,7 @@ createFunction statement f = do
     close <- expectParen open
     params <- forM (f ^. Pg.parameters) \p -> case node p of
         Just (Pg.Node'FunctionParameter fp) -> pure fp
-        _ -> unsupported "a function parameter pgfmt cannot read"
+        _ -> unsupported "a function parameter pgstyle cannot read"
     let isTable fp = fp ^. Pg.mode == Pg.FUNC_PARAM_TABLE
         (tableCols, args) = (filter isTable params, filter (not . isTable) params)
     argDs <- paramList args (open + 1) close
@@ -858,7 +858,7 @@ createFunction statement f = do
         case t of
             Just tk | tk.kind == Pg.IDENT || (tk.isKeyword && T.toLower tk.text `notElem` ["create", "or", "replace", "function", "procedure"]) -> pure j
             Just _ -> firstName (j + 1)
-            Nothing -> unsupported "a function pgfmt cannot read"
+            Nothing -> unsupported "a function pgstyle cannot read"
 
 
 -- | Where the parts of a function after its arguments are.
@@ -882,7 +882,7 @@ functionParts :: Pg.CreateFunctionStmt -> Int -> Int -> R FunctionParts
 functionParts f close end = do
     opts <- forM (f ^. Pg.options) \o -> case node o of
         Just (Pg.Node'DefElem de) -> (de,) <$> tokAt (fromIntegral (de ^. Pg.location))
-        _ -> unsupported "a function option pgfmt cannot read"
+        _ -> unsupported "a function option pgstyle cannot read"
     standardAt <- case f ^. Pg.maybe'sqlBody of
         Just _ -> Just <$> standardBodyStart (close + 1)
         Nothing -> pure Nothing
@@ -892,7 +892,7 @@ functionParts f close end = do
         if close + 1 < firstOpt
             then do
                 isReturns <- tokIs (close + 1) "returns"
-                unless isReturns (unsupported "a function pgfmt cannot read")
+                unless isReturns (unsupported "a function pgstyle cannot read")
                 pure (Just firstOpt)
             else pure Nothing
     -- Where the body starts: @as@, or a SQL-standard body after every
@@ -900,7 +900,7 @@ functionParts f close end = do
     body <- case (f ^. Pg.maybe'sqlBody, [s | (de, s) <- opts, de ^. Pg.defname == "as"]) of
         (Nothing, [s]) -> pure (QuotedBody s)
         (Just b, []) | Just at <- standardAt -> pure (StandardBody at b)
-        _ -> unsupported "a function without a body pgfmt can place"
+        _ -> unsupported "a function without a body pgstyle can place"
     let bodyAt = case body of
             QuotedBody at -> at
             StandardBody at _ -> at
@@ -973,7 +973,7 @@ standardBodyStart j = do
     w1 <- tokL (j + 1)
     t <- tokM j
     case t of
-        Nothing -> unsupported "a function body pgfmt cannot find"
+        Nothing -> unsupported "a function body pgstyle cannot find"
         Just _
             | w == "return" || (w == "begin" && w1 == "atomic") -> pure j
             | w == "(" -> do
@@ -997,14 +997,14 @@ standardBody statement b at end = case node b of
         , Just (Pg.Node'List l) <- node inner -> do
             let stmts = l ^. Pg.items
             isEnd <- tokIs (end - 1) "end"
-            unless isEnd (unsupported "a function body pgfmt cannot read")
+            unless isEnd (unsupported "a function body pgstyle cannot read")
             -- Each statement starts after @atomic@ or after a semicolon; one
             -- right after @atomic@ is kept.
             semiFirst <- tokIs (at + 2) ";"
             let first = if semiFirst then at + 3 else at + 2
             semis <- semicolons first (end - 1)
             let starts = first : map (+ 1) semis
-            unless (length semis == length stmts) (unsupported "a function body pgfmt cannot read")
+            unless (length semis == length stmts) (unsupported "a function body pgstyle cannot read")
             k <- (<> (if semiFirst then ";" else mempty)) <$> kw "begin atomic"
             ds <- forM (zip stmts starts) \(st, s) -> do
                 d <- statement st
@@ -1013,7 +1013,7 @@ standardBody statement b at end = case node b of
             endBrk <- brk mempty (end - 1)
             e <- kw "end"
             pure (k <> nest indentSize (mconcat ds) <> endBrk <> e)
-    _ -> unsupported "a function body pgfmt does not lay out"
+    _ -> unsupported "a function body pgstyle does not lay out"
   where
     semicolons j stop
         | j >= stop = pure []
@@ -1046,8 +1046,8 @@ paramList :: [Pg.FunctionParameter] -> Int -> Int -> R [(Int, D)]
 paramList ps from close = do
     starts <- traverse (tokAt . fromIntegral . (^. Pg.location)) ps
     case starts of
-        [] -> unless (from == close) (unsupported "a function pgfmt cannot read")
-        s0 : _ -> unless (s0 == from) (unsupported "a function pgfmt cannot read")
+        [] -> unless (from == close) (unsupported "a function pgstyle cannot read")
+        s0 : _ -> unless (s0 == from) (unsupported "a function pgstyle cannot read")
     let ends = map (subtract 1) (drop 1 starts) ++ [close]
     forM (zip3 ps starts ends) \(p, s, e) -> (s,) <$> param p s e
 
@@ -1127,7 +1127,7 @@ param p s e = do
     pure (spaceJoin (catMaybes [modeD, nameD, Just ty, def]))
   where
     findDefault j
-        | j >= e = unsupported "a parameter default pgfmt cannot read"
+        | j >= e = unsupported "a parameter default pgstyle cannot read"
         | otherwise = do
             w <- tokL j
             if w `elem` ["default", "="] then pure w else findDefault (j + 1)
@@ -1143,7 +1143,7 @@ returnsClause f tableCols s e = do
         then do
             t <- kw "table"
             close <- expectParen (s + 2)
-            unless (close == e - 1) (unsupported "a returns table pgfmt cannot read")
+            unless (close == e - 1) (unsupported "a returns table pgstyle cannot read")
             cols <- paramList tableCols (s + 3) close
             l <- itemList functionHeaderThreshold (k <+> t <> " ") cols close
             pure (k <+> t <+> l)
@@ -1151,7 +1151,7 @@ returnsClause f tableCols s e = do
             tn <- req "a function's return type" (f ^. Pg.maybe'returnType)
             setof <- tokIs (s + 1) "setof"
             let tyStart = if setof then s + 2 else s + 1
-            at <- tokM tyStart >>= maybe (unsupported "a return type pgfmt cannot read") (pure . (.start))
+            at <- tokM tyStart >>= maybe (unsupported "a return type pgstyle cannot read") (pure . (.start))
             ty <- typeName (tn & Pg.setof .~ False & Pg.location .~ fromIntegral at)
             sd <- if setof then (<> " ") <$> kw "setof" else pure mempty
             pure (k <+> sd <> ty)
@@ -1171,7 +1171,7 @@ createTrigger t = do
     clauses <- clauseStarts (nameAt + 1) end
     case clauses of
         (s0, _) : _ | s0 == nameAt + 1 -> pure ()
-        _ -> unsupported "a trigger pgfmt cannot read"
+        _ -> unsupported "a trigger pgstyle cannot read"
     -- The clauses the tree says are there are the ones found.
     let found kind = kind `elem` map snd clauses
     unless
@@ -1179,14 +1179,14 @@ createTrigger t = do
             && found Referencing == not (null (t ^. Pg.transitionRels))
             && found FromTable == isJust (t ^. Pg.maybe'constrrel)
         )
-        (unsupported "a trigger pgfmt cannot read")
+        (unsupported "a trigger pgstyle cannot read")
     let starts = map fst clauses
         ends = drop 1 starts ++ [end]
     ds <- forM (zip clauses ends) \((s, kind), e) -> do
         d <- case kind of
             When -> do
                 close <- expectParen (s + 1)
-                unless (close == e - 1) (unsupported "a trigger pgfmt cannot read")
+                unless (close == e - 1) (unsupported "a trigger pgstyle cannot read")
                 c <- req "a trigger's condition" (t ^. Pg.maybe'whenClause)
                 k <- kw "when"
                 (k <+>) <$> checkCondition c
@@ -1196,7 +1196,7 @@ createTrigger t = do
                 f <- qualNameAt (s + 2) names
                 let open = s + 2 + 2 * length names - 1
                 close <- expectParen open
-                unless (close == e - 1) (unsupported "a trigger pgfmt cannot read")
+                unless (close == e - 1) (unsupported "a trigger pgstyle cannot read")
                 args <- looseRun (open + 1) close
                 pure (ws <+> f <> "(" <> args <> ")")
             _ -> looseRun s e
@@ -1209,7 +1209,7 @@ createTrigger t = do
         case w of
             "trigger" -> pure j
             _ | w `elem` ["create", "or", "replace", "constraint"] -> findTrigger (j + 1)
-            _ -> unsupported "a trigger pgfmt cannot read"
+            _ -> unsupported "a trigger pgstyle cannot read"
     -- Where each clause starts, and what it is: the top-level words that
     -- start one.
     clauseStarts j b
@@ -1330,4 +1330,4 @@ relOptions items = do
     pure ("(" <> commaJoin opts <> ")")
   where
     cannot :: R a
-    cannot = unsupported "a storage option pgfmt cannot read"
+    cannot = unsupported "a storage option pgstyle cannot read"

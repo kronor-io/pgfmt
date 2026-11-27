@@ -1,5 +1,5 @@
 -- | Identifiers, constants and types.
-module PgFmt.Layout.Names where
+module PgStyle.Layout.Names where
 
 import Control.Monad (forM, unless, when, zipWithM)
 import Control.Monad.Reader (asks)
@@ -9,8 +9,8 @@ import Data.Maybe (isJust)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Lens.Micro ((^.))
-import PgFmt.Layout.Monad
 import PgQuery qualified as Pg
+import PgStyle.Layout.Monad
 import Prettyprinter (hcat, pretty, punctuate, (<+>))
 
 
@@ -58,10 +58,10 @@ qualNameAt :: Int -> [Text] -> R D
 qualNameAt i parts = hcat . punctuate "." <$> zipWithM (\k p -> identAt (i + 2 * k) p) [0 ..] parts
 
 
--- | Rendering modes for expressions. 'MR' is "PgFmt.Render"'s own
+-- | Rendering modes for expressions. 'MR' is "PgStyle.Render"'s own
 -- @renderExpr@; 'MP' is postgresql-syntax's renderer, lower-cased, which
--- "PgFmt.Render" uses for the nodes it does not lay out itself; 'MB' is
--- "PgFmt.Render"'s @renderBExpr@, for the lower bound of a @between@.
+-- "PgStyle.Render" uses for the nodes it does not lay out itself; 'MB' is
+-- "PgStyle.Render"'s @renderBExpr@, for the lower bound of a @between@.
 data Mode = MR | MB | MP
     deriving stock (Eq)
 
@@ -203,7 +203,7 @@ typeWords literal i = do
                         (rest, k) <- dotted (j + 2)
                         pure (part : rest, k)
                     else pure ([part], j + 1)
-            _ -> unsupported "a type name pgfmt cannot read"
+            _ -> unsupported "a type name pgstyle cannot read"
 
 
 -- | What goes between a type and its modifiers.
@@ -223,7 +223,7 @@ modifiers i = do
                 | tk.text == "," -> pure ", "
                 | tk.kind `elem` [Pg.ICONST, Pg.FCONST] -> pure (pretty (T.toLower tk.text))
                 | tk.kind == Pg.IDENT || tk.isKeyword -> ident (if "\"" `T.isPrefixOf` tk.text then T.drop 1 (T.dropEnd 1 tk.text) else foldCase tk.text)
-            _ -> unsupported "a type modifier pgfmt cannot read"
+            _ -> unsupported "a type modifier pgstyle cannot read"
     pure ("(" <> mconcat items <> ")", close + 1)
 
 
@@ -275,7 +275,7 @@ arrayBounds i n = do
     go _ 0 = pure []
     go j k = do
         isBracket <- tokIs j "["
-        unless isBracket (unsupported "array bounds pgfmt cannot read")
+        unless isBracket (unsupported "array bounds pgstyle cannot read")
         close <- tokIs (j + 1) "]"
         if close
             then ("[]" :) <$> go (j + 2) (k - 1)

@@ -5,15 +5,15 @@
 -- break at its place is not written, and the statement is refused.
 --
 -- Also the token spans and lists comments are looked for in.
-module PgFmt.Layout.Comments where
+module PgStyle.Layout.Comments where
 
 import Control.Monad (forM)
 import Control.Monad.Reader (asks)
 import Data.IntMap.Strict qualified as IM
 import Data.Text (Text)
-import PgFmt.Layout.Locations
-import PgFmt.Layout.Monad
 import PgQuery qualified as Pg
+import PgStyle.Layout.Locations
+import PgStyle.Layout.Monad
 import Prettyprinter (hardline)
 
 

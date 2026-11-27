@@ -1,10 +1,10 @@
--- | The libpg_query calls pgfmt needs that the @libpg-query@ package does not
+-- | The libpg_query calls pgstyle needs that the @libpg-query@ package does not
 -- expose: parsing and scanning bytes rather than a 'String' (so statement
 -- locations are byte offsets into exactly what we passed), and pretty-printed
 -- deparsing with the source's comments put back.
 --
--- The C side is @cbits/pgfmt.c@.
-module PgFmt.LibPgQuery (
+-- The C side is @cbits/pgstyle.c@.
+module PgStyle.LibPgQuery (
     LibPgQueryError (..),
     parse,
     parsePlpgsql,
@@ -52,23 +52,23 @@ data LibPgQueryError = LibPgQueryError
 type Out = Ptr CString -> Ptr CSize -> Ptr CInt -> IO CInt
 
 
-foreign import ccall safe "pgfmt_parse"
+foreign import ccall safe "pgstyle_parse"
     c_parse :: CString -> Out
 
 
-foreign import ccall safe "pgfmt_parse_json"
+foreign import ccall safe "pgstyle_parse_json"
     c_parse_json :: CString -> Out
 
 
-foreign import ccall safe "pgfmt_parse_plpgsql"
+foreign import ccall safe "pgstyle_parse_plpgsql"
     c_parse_plpgsql :: CString -> Out
 
 
-foreign import ccall safe "pgfmt_scan"
+foreign import ccall safe "pgstyle_scan"
     c_scan :: CString -> Out
 
 
-foreign import ccall safe "pgfmt_deparse"
+foreign import ccall safe "pgstyle_deparse"
     c_deparse :: CString -> CSize -> CInt -> CInt -> CInt -> CString -> Out
 
 

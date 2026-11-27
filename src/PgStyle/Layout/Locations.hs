@@ -4,7 +4,7 @@
 
 -- | The source locations in a parse tree, found through protobuf
 -- reflection.
-module PgFmt.Layout.Locations where
+module PgStyle.Layout.Locations where
 
 import Data.List (isSuffixOf)
 import Data.Map.Strict qualified as Map

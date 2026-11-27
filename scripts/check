@@ -2,11 +2,11 @@
 # The checks docs/readability.md describes. Run inside `nix develop`.
 #
 #   scripts/check fast     fourmolu
-#   scripts/check lint     build, then pgfmt's hopinion rules (lint/) over its .hie files
+#   scripts/check lint     build, then pgstyle's hopinion rules (lint/) over its .hie files
 #   scripts/check full     fast, lint, then every test
 #   scripts/check advice   HLint's suggestions, without failing
 #
-# The lint uses pgfmt-lint from PATH when the dev shell provides it, or else
+# The lint uses pgstyle-lint from PATH when the dev shell provides it, or else
 # builds it from lint/ with cabal.
 set -euo pipefail
 
@@ -35,23 +35,23 @@ build() {
     cabal build --enable-tests all
 }
 
-# The pgfmt-lint executable: the dev shell's, or one cabal builds from lint/.
+# The pgstyle-lint executable: the dev shell's, or one cabal builds from lint/.
 lint_executable() {
-    if command -v pgfmt-lint >/dev/null; then
-        command -v pgfmt-lint
+    if command -v pgstyle-lint >/dev/null; then
+        command -v pgstyle-lint
     else
-        (cd lint && cabal build -v0 exe:pgfmt-lint && cabal list-bin -v0 exe:pgfmt-lint)
+        (cd lint && cabal build -v0 exe:pgstyle-lint && cabal list-bin -v0 exe:pgstyle-lint)
     fi
 }
 
 # Each component's .hie files with its .hi interfaces, one tree per component,
 # rooted where a module's path starts, as hopinion looks them up. cabal.project
-# has pgfmt write the .hie files.
+# has pgstyle write the .hie files.
 collect_hie() {
     local into="$1"
-    find dist-newstyle/build -type d -name hie -path '*/pgfmt-*/*extra-compilation-artifacts*' | sort | while read -r artifacts; do
+    find dist-newstyle/build -type d -name hie -path '*/pgstyle-*/*extra-compilation-artifacts*' | sort | while read -r artifacts; do
         local component
-        component=$(echo "$artifacts" | sed -E 's|.*/pgfmt-[0-9.]+/||; s|/extra-compilation-artifacts/hie$||; s|[^A-Za-z0-9]+|-|g')
+        component=$(echo "$artifacts" | sed -E 's|.*/pgstyle-[0-9.]+/||; s|/extra-compilation-artifacts/hie$||; s|[^A-Za-z0-9]+|-|g')
         mkdir -p "$into/$component"
         (cd "$artifacts" && find . -name '*.hie' -exec cp --parents {} "$into/$component" \;)
         # The library's build directory also holds the other components', under -tmp.
@@ -69,8 +69,8 @@ lint() {
     collect_hie "$work/hie"
     local hie=()
     for tree in "$work"/hie/*; do hie+=(--hie-directory "$tree"); done
-    "$exe" package --root . --rel-prefix pgfmt "${hie[@]}" --out "$work/package" . >/dev/null
-    "$exe" project --package "$work/package" --source pgfmt=. "${hie[@]}" --expect-packages pgfmt --out "$work/project" >/dev/null
+    "$exe" package --root . --rel-prefix pgstyle "${hie[@]}" --out "$work/package" . >/dev/null
+    "$exe" project --package "$work/package" --source pgstyle=. "${hie[@]}" --expect-packages pgstyle --out "$work/project" >/dev/null
     "$exe" judge "$work/project"
 }
 

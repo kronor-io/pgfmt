@@ -6,7 +6,7 @@ import Data.String.Interpolate (__i)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
-import PgFmt.Render (formatSql)
+import PgStyle.Render (formatSql)
 import PostgresqlSyntax qualified as Ast
 import System.Exit (ExitCode (..), exitWith)
 import Prelude

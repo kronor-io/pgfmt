@@ -1,8 +1,8 @@
-# Readable code in pgfmt
+# Readable code in pgstyle
 
-This is how pgfmt's code is meant to read, and how that is checked. The rules come
+This is how pgstyle's code is meant to read, and how that is checked. The rules come
 from sqiff's, where they came out of refactoring code that reviewers found
-unreadable. The examples here are pgfmt's own, from `git log`.
+unreadable. The examples here are pgstyle's own, from `git log`.
 
 They are review rules, not laws, and each says when not to apply it. A change
 applies them to the code it touches. It does not clean up unrelated code on the
@@ -80,9 +80,9 @@ A `Maybe` that means something other than absence becomes a sum type, as a call'
 `Maybe Bool` (`Just True` for `distinct`) became
 `Quantifier = Unwritten | Distinct | All`.
 
-This does not forbid reading text. pgfmt reads the source's tokens for what the
-parse tree forgets: spelling, parentheses and comments. That is the input. The
-rule is about reading meaning back out of pgfmt's own output.
+This does not forbid reading text. pgstyle reads the source's tokens for what
+the parse tree forgets: spelling, parentheses and comments. That is the input.
+The rule is about reading meaning back out of pgstyle's own output.
 
 ### R4. Decide first, present after
 
@@ -143,18 +143,18 @@ a generic framework has to justify itself by making its callers simpler.
 Ordinary `traverse`, `foldMap` and `Semigroup` are welcome.
 
 The parse tree comes from protobuf, read through `microlens`, and
-`PgFmt.Layout.Locations` walks it by reflection. Neither is a model for
-pgfmt's own types.
+`PgStyle.Layout.Locations` walks it by reflection. Neither is a model for
+pgstyle's own types.
 
-## pgfmt
+## pgstyle
 
 - **Output is a contract.** A refactor keeps the formatted text byte for byte
   unless the change is meant to alter it. This covers Kronor's migrations in
   both keyword cases, its Haskell files, and every test.
-- **Refuse rather than guess.** Every statement pgfmt rewrites must still parse
-  to the same tree, and every comment must come out once, in order. A construct
-  the layout does not know is refused with `unsupported`. Never weaken those
-  checks to let a change through.
+- **Refuse rather than guess.** Every statement pgstyle rewrites must still
+  parse to the same tree, and every comment must come out once, in order. A
+  construct the layout does not know is refused with `unsupported`. Never weaken
+  those checks to let a change through.
 - **Meaning from the tree, spelling from the tokens.** Decide what a construct is
   from libpg_query's parse tree. Read the source tokens only for what the tree
   forgets, which is how it was spelled, its parentheses and its comments.
@@ -162,9 +162,9 @@ pgfmt's own types.
   a node, which makes them that node's, goes through `remembered`, so that asking
   again gives the same answer. Code that only reads the source's parentheses,
   such as `selectParensPeek`, places nothing and needs no memo.
-- **"PgFmt.Layout" follows "PgFmt.Render".** The DML layout is "PgFmt.Render"'s,
-  function for function, and is named after it. Change both together, or say
-  why they differ.
+- **"PgStyle.Layout" follows "PgStyle.Render".** The DML layout is
+  "PgStyle.Render"'s, function for function, and is named after it. Change both
+  together, or say why they differ.
 - **Name each threshold.** A width or length that decides a layout is a named
   constant, such as `functionHeaderThreshold`.
 - **Record fields are strict** (`StrictData`). A field that has to stay lazy says
@@ -195,31 +195,31 @@ Each of these would be met by worse code.
 
 ## How the rules are checked
 
-The checks catch only the plainest cases of their rules. `PgfmtSmallWhere` does
-not see several stages in a `where` block of fewer than twelve bindings, and
-`PgfmtNamedTuples` does not see positional data inside a record's fields. Review
-covers the rest.
+The checks catch only the plainest cases of their rules. `PgstyleSmallWhere`
+does not see several stages in a `where` block of fewer than twelve bindings,
+and `PgstyleNamedTuples` does not see positional data inside a record's fields.
+Review covers the rest.
 
 | Rule | Check |
 |---|---|
-| R1 | `PgfmtSmallWhere`: a where block of at most twelve bindings |
-| R2 | `PgfmtNamedTuples`: no tuple of three or more, and no tuple inside a tuple, in a top-level signature |
-| H1 | `PgfmtNamedFields`: no constructor applied to more than four positional arguments |
-| H2 (signatures), exhaustive matches | GHC: `-Werror` for missing signatures, missing fields, incomplete patterns and incomplete record updates (`pgfmt.cabal`) |
+| R1 | `PgstyleSmallWhere`: a where block of at most twelve bindings |
+| R2 | `PgstyleNamedTuples`: no tuple of three or more, and no tuple inside a tuple, in a top-level signature |
+| H1 | `PgstyleNamedFields`: no constructor applied to more than four positional arguments |
+| H2 (signatures), exhaustive matches | GHC: `-Werror` for missing signatures, missing fields, incomplete patterns and incomplete record updates (`pgstyle.cabal`) |
 | Layout | fourmolu (`fourmolu.yaml`) |
 | Everything else | Review, with `.claude/skills/readability-review` |
 
-The `Pgfmt*` rules are pgfmt's own [hopinion](https://github.com/NorfairKing/hopinion)
+The `Pgstyle*` rules are pgstyle's own [hopinion](https://github.com/NorfairKing/hopinion)
 rules, in `lint/`. hopinion parses each module with GHC's parser and reads the
 `.hie` files the build writes, so a rule sees the code as the compiler does, not
 as text. Each rule carries its text, why it exists, and how to fix a finding.
-`pgfmt-lint explain PgfmtNamedFields` prints them. hopinion's own built-in rules
-are not used: they are another project's style.
+`pgstyle-lint explain PgstyleNamedFields` prints them. hopinion's own built-in
+rules are not used: they are another project's style.
 
 A finding that is right to leave says so where it is, directly above the line:
 
 ```haskell
--- [allow:PgfmtSmallWhere] one recursive scanner whose states share the source and its tokens
+-- [allow:PgstyleSmallWhere] one recursive scanner whose states share the source and its tokens
 ```
 
 The reason is required. An annotation that suppresses nothing fails the check,
@@ -234,10 +234,11 @@ reason.
 The checks run from `scripts/check`:
 
 - `scripts/check fast` runs fourmolu.
-- `scripts/check lint` builds pgfmt and runs the rules over it.
+- `scripts/check lint` builds pgstyle and runs the rules over it.
 - `scripts/check full` runs both, then every test.
 - `scripts/check advice` prints HLint's suggestions without failing.
 
 A rule moves from review to a check when review keeps missing it. A new rule is
-a module in `lint/src/PgFmt/Lint/Rule/`, listed in `PgFmt.Lint.rules`. It has to
-hold on pgfmt, with every existing finding fixed or annotated with its reason.
+a module in `lint/src/PgStyle/Lint/Rule/`, listed in `PgStyle.Lint.rules`. It
+has to hold on pgstyle, with every existing finding fixed or annotated with its
+reason.
