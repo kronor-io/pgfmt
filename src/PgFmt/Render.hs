@@ -269,6 +269,14 @@ jsonOps :: [Text]
 jsonOps = ["->", "->>", "#>", "#>>"]
 
 
+-- | Whether an operator is one of 'jsonOps', written plainly: not as
+-- @operator(...)@.
+isJsonOp :: Ast.SymbolicExprBinOp -> Bool
+isJsonOp = \case
+    Ast.QualSymbolicExprBinOp (Ast.OpQualOp (Ast.Op op)) -> op `elem` jsonOps
+    _ -> False
+
+
 -- | Render via postgresql-syntax's renderer as a 'Doc'. Output is lowercased
 -- and @:: @ typecast spacing is tightened to @::@, while content inside
 -- single-quoted string literals (@'...'@) and double-quoted identifiers
@@ -326,9 +334,8 @@ renderExpr = \case
         "not" <+> renderExpr expr
     Ast.CExprAExpr cexpr -> renderCExpr cexpr
     Ast.SymbolicBinOpAExpr left op right ->
-        let opText = inlineText render op
-            opDoc = pretty opText
-         in if opText `elem` jsonOps
+        let opDoc = pretty (inlineText render op)
+         in if isJsonOp op
                 then renderExpr left <> opDoc <> renderExpr right
                 else renderExpr left <+> opDoc <+> renderExpr right
     Ast.PlusAExpr expr -> "+" <> renderExpr expr

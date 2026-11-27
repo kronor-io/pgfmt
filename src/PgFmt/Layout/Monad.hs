@@ -11,6 +11,7 @@ import Data.Char (isAsciiUpper, toLower)
 import Data.IntMap.Strict qualified as IM
 import Data.IntSet qualified as IS
 import Data.Map.Strict qualified as Map
+import Data.Maybe (mapMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
@@ -59,9 +60,9 @@ data Env = Env
     , allLocs :: IS.IntSet
     -- ^ Every location in the statement's tree.
     , upper :: Bool
-    , names :: Map.Map Text (Bool, Bool)
-    -- ^ Each identifier of the source, case-folded as PostgreSQL does: whether
-    -- it is written quoted, and whether unquoted.
+    , names :: Map.Map Text NameSpelling
+    -- ^ Each identifier of the source, case-folded as PostgreSQL does, and
+    -- how it is written.
     , cmts :: IM.IntMap [Cmt]
     -- ^ The comments after each token (by index), in order.
     , column :: Int
@@ -149,61 +150,103 @@ mkEnv upper sql scan stmt =
     Env
         { toks = IM.fromList (zip [0 ..] ts)
         , byStart = IM.fromList (zip (map (.start) ts) [0 ..])
-        , matching = IM.fromList (pairs [] (zip [0 ..] ts))
+        , matching = IM.fromList (matchingParens ts)
         , allLocs = IS.fromList (locsNode stmt)
         , upper
-        , names = Map.fromListWith (\(a, b) (c, d) -> (a || c, b || d)) (mapMaybe' nameOf ts)
-        , cmts = IM.fromListWith (flip (++)) (comments (-1) 0 (scan ^. Pg.tokens))
+        , names = Map.fromListWith (<>) (mapMaybe nameSpelling ts)
+        , cmts = IM.fromListWith (flip (++)) (commentsAfter sql scanned)
         , column = 0
         , tightTypes = False
-        , blankLineBefore = IS.fromList (blanks 0 Nothing (scan ^. Pg.tokens))
+        , blankLineBefore = IS.fromList (blankLinesBefore sql scanned)
         }
   where
-    slice a b = BS.take (b - a) (BS.drop a sql)
-    -- Each comment with the index of the token before it, and whether a line
-    -- break separates it from what precedes it.
-    -- The index of each token with a blank line before it.
-    blanks _ _ [] = []
-    blanks i prevEnd (t : rest)
-        | isComment t = blanks i (Just e) rest
-        | otherwise = [i | Just pe <- [prevEnd], BS.count 10 (slice pe s) >= 2] ++ blanks (i + 1) (Just e) rest
-      where
-        s = fromIntegral (t ^. Pg.start)
-        e = fromIntegral (t ^. Pg.end)
-    comments _ _ [] = []
-    comments prev prevEnd (t : rest)
+    scanned = scan ^. Pg.tokens
+    ts = tokens sql scanned
+
+
+-- | The statement's tokens, comments left out, numbered from 0 in order.
+tokens :: ByteString -> [Pg.ScanToken] -> [Tok]
+tokens sql scanned =
+    [ Tok
+        { start = s
+        , text = TE.decodeUtf8Lenient (BS.take (e - s) (BS.drop s sql))
+        , kind = t ^. Pg.token
+        , isKeyword = t ^. Pg.keywordKind /= Pg.NO_KEYWORD
+        , reserved = t ^. Pg.keywordKind == Pg.RESERVED_KEYWORD
+        }
+    | t <- scanned
+    , not (isComment t)
+    , let s = fromIntegral (t ^. Pg.start)
+    , let e = fromIntegral (t ^. Pg.end)
+    ]
+
+
+-- | Each parenthesis's index with the other one's, both ways round.
+matchingParens :: [Tok] -> [(Int, Int)]
+matchingParens = go [] . zip [0 ..]
+  where
+    go _ [] = []
+    go stack ((i, t) : rest)
+        | t.text == "(" = go (i : stack) rest
+        | t.text == ")", o : stack' <- stack = (o, i) : (i, o) : go stack' rest
+        | otherwise = go stack rest
+
+
+-- | How the source writes an identifier: quoted, unquoted, or both.
+data NameSpelling = NameSpelling
+    { quoted :: Bool
+    , unquoted :: Bool
+    }
+
+
+instance Semigroup NameSpelling where
+    a <> b = NameSpelling{quoted = a.quoted || b.quoted, unquoted = a.unquoted || b.unquoted}
+
+
+-- | The identifier a token spells, case-folded as PostgreSQL does, and how.
+nameSpelling :: Tok -> Maybe (Text, NameSpelling)
+nameSpelling t
+    | t.kind == Pg.IDENT
+    , Just q <- T.stripPrefix "\"" t.text =
+        Just (T.replace "\"\"" "\"" (T.dropEnd 1 q), NameSpelling{quoted = True, unquoted = False})
+    | t.kind == Pg.IDENT || (t.isKeyword && not t.reserved) =
+        Just (foldCase t.text, NameSpelling{quoted = False, unquoted = True})
+    | otherwise = Nothing
+
+
+-- | Each comment with the index of the token before it (-1 before the
+-- first), in order.
+commentsAfter :: ByteString -> [Pg.ScanToken] -> [(Int, [Cmt])]
+commentsAfter sql = go (-1) 0
+  where
+    go _ _ [] = []
+    go prev prevEnd (t : rest)
         | isComment t =
-            (prev, [Cmt{ctext = TE.decodeUtf8Lenient (slice s e), ownLine = prev < 0 || BS.elem 10 (slice prevEnd s), blankBefore = BS.count 10 (slice prevEnd s) >= 2}])
-                : comments prev e rest
-        | otherwise = comments (prev + 1) e rest
+            (prev, [Cmt{ctext = TE.decodeUtf8Lenient (slice sql s e), ownLine = prev < 0 || BS.elem 10 (slice sql prevEnd s), blankBefore = BS.count 10 (slice sql prevEnd s) >= 2}])
+                : go prev e rest
+        | otherwise = go (prev + 1) e rest
       where
         s = fromIntegral (t ^. Pg.start)
         e = fromIntegral (t ^. Pg.end)
-    ts =
-        [ Tok
-            { start = s
-            , text = TE.decodeUtf8Lenient (BS.take (e - s) (BS.drop s sql))
-            , kind = t ^. Pg.token
-            , isKeyword = t ^. Pg.keywordKind /= Pg.NO_KEYWORD
-            , reserved = t ^. Pg.keywordKind == Pg.RESERVED_KEYWORD
-            }
-        | t <- scan ^. Pg.tokens
-        , not (isComment t)
-        , let s = fromIntegral (t ^. Pg.start)
-        , let e = fromIntegral (t ^. Pg.end)
-        ]
-    pairs _ [] = []
-    pairs stack ((i, t) : rest)
-        | t.text == "(" = pairs (i : stack) rest
-        | t.text == ")", o : stack' <- stack = (o, i) : (i, o) : pairs stack' rest
-        | otherwise = pairs stack rest
-    nameOf t
-        | t.kind == Pg.IDENT
-        , Just quoted <- T.stripPrefix "\"" t.text =
-            Just (T.replace "\"\"" "\"" (T.dropEnd 1 quoted), (True, False))
-        | t.kind == Pg.IDENT || (t.isKeyword && not t.reserved) = Just (foldCase t.text, (False, True))
-        | otherwise = Nothing
-    mapMaybe' f = foldr (\x acc -> maybe acc (: acc) (f x)) []
+
+
+-- | The index of each token with a blank line directly before it, after the
+-- token or comment that precedes it.
+blankLinesBefore :: ByteString -> [Pg.ScanToken] -> [Int]
+blankLinesBefore sql = go 0 Nothing
+  where
+    go _ _ [] = []
+    go i prevEnd (t : rest)
+        | isComment t = go i (Just e) rest
+        | otherwise = [i | Just pe <- [prevEnd], BS.count 10 (slice sql pe s) >= 2] ++ go (i + 1) (Just e) rest
+      where
+        s = fromIntegral (t ^. Pg.start)
+        e = fromIntegral (t ^. Pg.end)
+
+
+-- | The bytes from @a@ to before @b@.
+slice :: ByteString -> Int -> Int -> ByteString
+slice sql a b = BS.take (b - a) (BS.drop a sql)
 
 
 -- | PostgreSQL folds unquoted identifiers' ASCII letters to lower case.
