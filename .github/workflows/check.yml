@@ -144,3 +144,46 @@ jobs:
             gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes
           fi
           gh release upload "$GITHUB_REF_NAME" pgfmt-*-linux.tar.xz SHA256SUMS --clobber
+
+  # The same binaries as an image (Dockerfile), for linux/amd64 and
+  # linux/arm64, tagged with the version (v0.1.2.0 is 0.1.2.0) and latest.
+  # Nothing in it runs during the build, so one runner builds both.
+  docker:
+    name: Docker image
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: release-binary
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: pgfmt-*-linux
+          merge-multiple: true
+          path: release
+      - name: Build and push
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          set -Eeu
+          mkdir -p context/amd64 context/arm64
+          tar -xJf release/pgfmt-x86_64-linux.tar.xz -C context/amd64
+          tar -xJf release/pgfmt-aarch64-linux.tar.xz -C context/arm64
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+          docker buildx create --use
+          docker buildx build context \
+            --file Dockerfile \
+            --platform linux/amd64,linux/arm64 \
+            --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+            --label "org.opencontainers.image.version=${GITHUB_REF_NAME#v}" \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            --annotation "index:org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+            --tag "$image:${GITHUB_REF_NAME#v}" \
+            --tag "$image:latest" \
+            --push

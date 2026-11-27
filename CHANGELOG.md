@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+* Each release also pushes an image, `ghcr.io/kronor-io/pgfmt`, for
+  `linux/amd64` and `linux/arm64`, tagged with the version and `latest`. It
+  holds the release's static binary and nothing else:
+
+      docker run --rm -v "$PWD:/work" -u "$(id -u):$(id -g)" ghcr.io/kronor-io/pgfmt --check migrations/*.sql
+
 * The `syntax` backend no longer writes `select` twice for a subquery with
   an explicit `all` (`a in (select all b from u)`), which the parse-tree check
   caught as an error.

@@ -54,6 +54,15 @@ curl -fsSL "https://github.com/kronor-io/pgfmt/releases/latest/download/pgfmt-$(
 
 `SHA256SUMS` on the release has the tarballs' checksums.
 
+The same binary is an image, `ghcr.io/kronor-io/pgfmt`, for `linux/amd64` and
+`linux/arm64`, tagged with each version and `latest`. It holds pgfmt alone, no
+shell, and runs it in `/work`. Mount your files there and run it as yourself,
+so the files it rewrites stay yours:
+
+```bash
+docker run --rm -v "$PWD:/work" -u "$(id -u):$(id -g)" ghcr.io/kronor-io/pgfmt --check migrations/*.sql
+```
+
 Elsewhere, and for development, the easiest way to get it is
 [Nix](https://nixos.org/download) with flakes enabled. CI pushes every build to
 the `kronor-open.cachix.org` binary cache, and the flake offers to use it:
@@ -533,7 +542,8 @@ patched library keeps the string.
 
 The release binaries come from `scripts/build-static`, which builds the
 patched libpg_query and pgfmt in a ghc-musl container with Docker and writes
-`dist-static/pgfmt-<arch>-linux.tar.xz`.
+`dist-static/pgfmt-<arch>-linux.tar.xz`. The image is the `Dockerfile` around
+those binaries.
 
 With cabal (GHC 9.12), everything else comes from Hackage. Build libpg_query
 18 with that patch
