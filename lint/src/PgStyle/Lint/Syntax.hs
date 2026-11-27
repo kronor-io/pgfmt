@@ -1,7 +1,7 @@
 {-# LANGUAGE LambdaCase #-}
 
--- | Taking expressions and signatures apart the way pgfmt's rules read them.
-module PgFmt.Lint.Syntax (
+-- | Taking expressions and signatures apart the way pgstyle's rules read them.
+module PgStyle.Lint.Syntax (
     applicationOf,
     variableName,
     fieldName,

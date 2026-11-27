@@ -1,6 +1,6 @@
 ---
 name: readability-review
-description: Review a pgfmt change against docs/readability.md and report concrete findings. Use when asked to review a diff, branch or PR for readability, or before opening a PR that refactors code.
+description: Review a pgstyle change against docs/readability.md and report concrete findings. Use when asked to review a diff, branch or PR for readability, or before opening a PR that refactors code.
 ---
 
 # Readability review
@@ -15,7 +15,7 @@ already cover what a tool can decide, and this review covers the rest.
 3. Read each changed function in full, and the callers of any function whose
    type or behaviour changed.
 4. For each problem, report:
-   - the rule (R1–R7, H1–H3, or the pgfmt section) and `file:line`;
+   - the rule (R1–R7, H1–H3, or the pgstyle section) and `file:line`;
    - what is hard to read, or what invariant is at risk, concretely;
    - the smallest change that fixes it.
 5. Sort the findings into three groups:

@@ -1,4 +1,4 @@
-# Working on pgfmt
+# Working on pgstyle
 
 Read `docs/readability.md` before changing Haskell code. Apply its rules to the
 code you change, and do not clean up unrelated code.

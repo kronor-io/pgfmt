@@ -1,8 +1,9 @@
-module PgFmt.Layout.Dml where
+module PgStyle.Layout.Dml where
 
-import PgFmt.Layout.Monad (D, R)
-import PgFmt.Layout.Parens (Sel)
 import PgQuery qualified as Pg
+import PgStyle.Layout.Monad (D, R)
+import PgStyle.Layout.Parens (Sel)
+
 
 selMaybeWrap :: Sel -> R D
 selP :: Sel -> R D

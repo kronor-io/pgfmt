@@ -1,6 +1,6 @@
 -- | The layout's monad: the statement's source and tokens, what is placed so
 -- far, and the small helpers every part of the layout uses.
-module PgFmt.Layout.Monad where
+module PgStyle.Layout.Monad where
 
 import Control.Monad.Except (MonadError (catchError, throwError))
 import Control.Monad.Reader (ReaderT, asks)
@@ -16,8 +16,8 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Lens.Micro ((^.))
-import PgFmt.Layout.Locations
 import PgQuery qualified as Pg
+import PgStyle.Layout.Locations
 import Prettyprinter (Doc, LayoutOptions (..), PageWidth (..), hcat, layoutPretty, pretty, punctuate)
 import Prettyprinter.Internal (unsafeTextWithoutNewlines)
 import Prettyprinter.Render.Text (renderStrict)

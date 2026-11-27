@@ -1,5 +1,5 @@
 /*
- * The libpg_query calls pgfmt makes, reshaped for Haskell's FFI, which cannot
+ * The libpg_query calls pgstyle makes, reshaped for Haskell's FFI, which cannot
  * take or return C structs by value. Every function returns 0 on success and
  * hands back a malloc'd buffer in *out / *out_len, which the caller frees with
  * free(). On failure it returns 1, *out holds the error message (also malloc'd,
@@ -31,7 +31,7 @@ static int fail(const PgQueryError *error, char **out, size_t *out_len, int *cur
 }
 
 /* The protobuf parse tree of sql. */
-int pgfmt_parse(const char *sql, char **out, size_t *out_len, int *cursor)
+int pgstyle_parse(const char *sql, char **out, size_t *out_len, int *cursor)
 {
     PgQueryProtobufParseResult result = pg_query_parse_protobuf(sql);
     int rc;
@@ -51,7 +51,7 @@ int pgfmt_parse(const char *sql, char **out, size_t *out_len, int *cursor)
  * The JSON parse tree of sql. Unlike the protobuf, it tells an empty string
  * from a missing one (comment on t is '' from comment on t is null).
  */
-int pgfmt_parse_json(const char *sql, char **out, size_t *out_len, int *cursor)
+int pgstyle_parse_json(const char *sql, char **out, size_t *out_len, int *cursor)
 {
     PgQueryParseResult result = pg_query_parse(sql);
     int rc;
@@ -68,7 +68,7 @@ int pgfmt_parse_json(const char *sql, char **out, size_t *out_len, int *cursor)
 }
 
 /* The protobuf token stream of sql, comments included. */
-int pgfmt_scan(const char *sql, char **out, size_t *out_len, int *cursor)
+int pgstyle_scan(const char *sql, char **out, size_t *out_len, int *cursor)
 {
     PgQueryScanResult result = pg_query_scan(sql);
     int rc;
@@ -85,7 +85,7 @@ int pgfmt_scan(const char *sql, char **out, size_t *out_len, int *cursor)
 }
 
 /* libpg_query's JSON for the PL/pgSQL functions sql creates. */
-int pgfmt_parse_plpgsql(const char *sql, char **out, size_t *out_len, int *cursor)
+int pgstyle_parse_plpgsql(const char *sql, char **out, size_t *out_len, int *cursor)
 {
     PgQueryPlpgsqlParseResult result = pg_query_parse_plpgsql(sql);
     int rc;
@@ -107,7 +107,7 @@ int pgfmt_parse_plpgsql(const char *sql, char **out, size_t *out_len, int *curso
  * lays it out, and the comments of comment_source (the text the tree was parsed
  * from, so their locations line up) are put back; comment_source may be NULL.
  */
-int pgfmt_deparse(const char *tree, size_t tree_len, int pretty, int indent_size,
+int pgstyle_deparse(const char *tree, size_t tree_len, int pretty, int indent_size,
                   int max_line_length, const char *comment_source,
                   char **out, size_t *out_len, int *cursor)
 {

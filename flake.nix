@@ -85,15 +85,15 @@
             };
             modules = [{
               packages.libpg-query.components.library.libs = [ pkgs.libpg_query ];
-              packages.pgfmt.components.library.libs = [ pkgs.libpg_query ];
+              packages.pgstyle.components.library.libs = [ pkgs.libpg_query ];
             }];
           };
 
           project = mkProject "cabal.project";
           kronor = mkProject "cabal.project.kronor";
 
-          # pgfmt's hopinion rules (lint/). Built with pgfmt's compiler, since
-          # hopinion reads the .hie and .hi files that compiler writes.
+          # pgstyle's hopinion rules (lint/). Built with pgstyle's compiler,
+          # since hopinion reads the .hie and .hi files that compiler writes.
           lintProject = pkgs.haskell-nix.cabalProject' {
             src = ./lint;
             compiler-nix-name = "ghc9124";
@@ -108,17 +108,17 @@
               '';
             };
           };
-          pgfmt-lint = lintProject.hsPkgs.pgfmt-lint.components.exes.pgfmt-lint;
+          pgstyle-lint = lintProject.hsPkgs.pgstyle-lint.components.exes.pgstyle-lint;
         in
         {
-          inherit pkgs project pgfmt-lint;
-          pgfmt = project.pgfmt.components.exes.pgfmt;
-          pgfmt-kronor = kronor.pgfmt.components.exes.pgfmt;
-          checks = project.pgfmt.checks // {
-            render-kronor = kronor.pgfmt.checks.render;
-            file-kronor = kronor.pgfmt.checks.file;
-            haskell-kronor = kronor.pgfmt.checks.haskell;
-            layout-kronor = kronor.pgfmt.checks.layout;
+          inherit pkgs project pgstyle-lint;
+          pgstyle = project.pgstyle.components.exes.pgstyle;
+          pgstyle-kronor = kronor.pgstyle.components.exes.pgstyle;
+          checks = project.pgstyle.checks // {
+            render-kronor = kronor.pgstyle.checks.render;
+            file-kronor = kronor.pgstyle.checks.file;
+            haskell-kronor = kronor.pgstyle.checks.haskell;
+            layout-kronor = kronor.pgstyle.checks.layout;
           };
         };
 
@@ -132,10 +132,10 @@
     in
     {
       packages = forAllSystems (system: rec {
-        pgfmt = bySystem.${system}.pgfmt;
-        pgfmt-kronor = bySystem.${system}.pgfmt-kronor;
-        pgfmt-lint = bySystem.${system}.pgfmt-lint;
-        default = pgfmt;
+        pgstyle = bySystem.${system}.pgstyle;
+        pgstyle-kronor = bySystem.${system}.pgstyle-kronor;
+        pgstyle-lint = bySystem.${system}.pgstyle-lint;
+        default = pgstyle;
       });
 
       checks = forAllSystems (system: bySystem.${system}.checks);
@@ -150,18 +150,18 @@
       apps = forAllSystems (system: {
         default = {
           type = "app";
-          program = "${bySystem.${system}.pgfmt}/bin/pgfmt";
+          program = "${bySystem.${system}.pgstyle}/bin/pgstyle";
         };
       });
 
       devShells = forAllSystems (system:
-        let inherit (bySystem.${system}) pkgs project pgfmt-lint; in {
+        let inherit (bySystem.${system}) pkgs project pgstyle-lint; in {
           default = project.shellFor {
             tools.cabal = { version = "3.16.1.0"; };
             # scripts/check runs these.
             tools.fourmolu = { version = "0.19.0.1"; };
             tools.hlint = { version = "3.10"; };
-            buildInputs = [ pkgs.libpg_query pgfmt-lint ];
+            buildInputs = [ pkgs.libpg_query pgstyle-lint ];
           };
         });
     };

@@ -1,6 +1,7 @@
-# pgfmt
+# pgstyle
 
 A formatter for PostgreSQL files that does not change what any statement does.
+Up to 0.1.1.0 it was called pgfmt.
 
 It turns this:
 
@@ -28,7 +29,7 @@ limit 50;
 
 It reads files with PostgreSQL's own parser
 ([libpg_query](https://github.com/pganalyze/libpg_query)), so anything
-PostgreSQL accepts, pgfmt accepts: DDL, DML, `create function` and PL/pgSQL
+PostgreSQL accepts, pgstyle accepts: DDL, DML, `create function` and PL/pgSQL
 bodies. Before it rewrites a statement, it parses the new text again and checks
 that PostgreSQL sees the same statement. If the check fails, the statement is
 left as it was.
@@ -36,51 +37,60 @@ left as it was.
 It also formats the SQL in a Haskell file's
 [hasql-th quasiquotes](#haskell-hasql-th-quasiquotes).
 
-pgfmt is one of the tools Kronor uses to keep a PostgreSQL schema in sqitch, with [sqiff](https://github.com/kronor-io/sqiff), [sqint](https://github.com/kronor-io/sqint), [create-migration](https://github.com/kronor-io/sqitch-with-templates) and [psql-retry](https://github.com/kronor-io/psql-retry). [sqitchcraft](https://kronor-io.github.io/sqitchcraft/) shows how they fit together: the repository layout they assume, one change from an edited file to a deploy, and instructions for coding agents.
+pgstyle is one of the tools Kronor uses to keep a PostgreSQL schema in sqitch, with [sqiff](https://github.com/kronor-io/sqiff), [sqint](https://github.com/kronor-io/sqint), [create-migration](https://github.com/kronor-io/sqitch-with-templates) and [psql-retry](https://github.com/kronor-io/psql-retry). [sqitchcraft](https://kronor-io.github.io/sqitchcraft/) shows how they fit together: the repository layout they assume, one change from an edited file to a deploy, and instructions for coding agents.
 
 ## Install
 
-pgfmt is a single binary.
+pgstyle is a single binary.
 
-On Linux, each [release](https://github.com/kronor-io/pgfmt/releases) has a
+On Linux, each [release](https://github.com/kronor-io/pgstyle/releases) has a
 static binary for `x86_64` and `aarch64` that runs on any distribution. Unpack
-it into `~/.local` (or `/usr/local`) to get `bin/pgfmt` and its bash, zsh and
+it into `~/.local` (or `/usr/local`) to get `bin/pgstyle` and its bash, zsh and
 fish completions:
 
 ```bash
-curl -fsSL "https://github.com/kronor-io/pgfmt/releases/latest/download/pgfmt-$(uname -m)-linux.tar.xz" \
+curl -fsSL "https://github.com/kronor-io/pgstyle/releases/latest/download/pgstyle-$(uname -m)-linux.tar.xz" \
   | tar -xJ -C ~/.local
 ```
 
 `SHA256SUMS` on the release has the tarballs' checksums.
 
+The same binary is an image, `ghcr.io/kronor-io/pgstyle`, for `linux/amd64` and
+`linux/arm64`, tagged with each version and `latest`. It holds pgstyle alone, no
+shell, and runs it in `/work`. Mount your files there and run it as yourself,
+so the files it rewrites stay yours:
+
+```bash
+docker run --rm -v "$PWD:/work" -u "$(id -u):$(id -g)" ghcr.io/kronor-io/pgstyle --check migrations/*.sql
+```
+
 Elsewhere, and for development, the easiest way to get it is
 [Nix](https://nixos.org/download) with flakes enabled. CI pushes every build to
 the `kronor-open.cachix.org` binary cache, and the flake offers to use it:
-answer yes, or pass `--accept-flake-config`, and Nix downloads pgfmt instead of
-compiling it and its Haskell dependencies.
+answer yes, or pass `--accept-flake-config`, and Nix downloads pgstyle instead
+of compiling it and its Haskell dependencies.
 
 Try it without installing:
 
 ```bash
-nix run --accept-flake-config github:kronor-io/pgfmt -- --help
+nix run --accept-flake-config github:kronor-io/pgstyle -- --help
 ```
 
 Install it into your profile:
 
 ```bash
-nix profile install --accept-flake-config github:kronor-io/pgfmt
+nix profile install --accept-flake-config github:kronor-io/pgstyle
 ```
 
 Or add it to a flake's dev shell:
 
 ```nix
 {
-  inputs.pgfmt.url = "github:kronor-io/pgfmt";
+  inputs.pgstyle.url = "github:kronor-io/pgstyle";
 
-  outputs = { nixpkgs, pgfmt, ... }: {
+  outputs = { nixpkgs, pgstyle, ... }: {
     devShells.x86_64-linux.default = nixpkgs.legacyPackages.x86_64-linux.mkShell {
-      packages = [ pgfmt.packages.x86_64-linux.default ];
+      packages = [ pgstyle.packages.x86_64-linux.default ];
     };
   };
 }
@@ -97,14 +107,14 @@ Name the files. They are rewritten in place, and files that are already
 formatted are not touched:
 
 ```bash
-pgfmt migrations/*.sql
+pgstyle migrations/*.sql
 ```
 
-With no files, or `-`, pgfmt reads stdin and writes stdout, which is what
+With no files, or `-`, pgstyle reads stdin and writes stdout, which is what
 editors want:
 
 ```bash
-pgfmt < query.sql
+pgstyle < query.sql
 ```
 
 Each statement is formatted on its own. Comments, blank lines and anything else
@@ -141,7 +151,7 @@ create table refunds (
 exits 1:
 
 ```console
-$ pgfmt --check migrations/*.sql
+$ pgstyle --check migrations/*.sql
 migrations/0042-refunds.sql: not formatted
 $ echo $?
 1
@@ -151,18 +161,18 @@ In GitHub Actions:
 
 ```yaml
 - uses: cachix/install-nix-action@v31
-- run: nix run --accept-flake-config github:kronor-io/pgfmt -- --check $(git ls-files '*.sql')
+- run: nix run --accept-flake-config github:kronor-io/pgstyle -- --check $(git ls-files '*.sql')
 ```
 
-As a [pre-commit](https://pre-commit.com) hook, with pgfmt on your `PATH`:
+As a [pre-commit](https://pre-commit.com) hook, with pgstyle on your `PATH`:
 
 ```yaml
 repos:
   - repo: local
     hooks:
-      - id: pgfmt
-        name: pgfmt
-        entry: pgfmt
+      - id: pgstyle
+        name: pgstyle
+        entry: pgstyle
         language: system
         files: \.sql$
 ```
@@ -175,10 +185,10 @@ repos:
 | 1    | `--check` only: at least one file is not formatted. |
 | 2    | A file is not valid SQL, or a statement failed verification (a formatter bug; that statement is left as it was). |
 
-A file pgfmt cannot parse is never rewritten:
+A file pgstyle cannot parse is never rewritten:
 
 ```console
-$ echo 'selec 1;' | pgfmt
+$ echo 'selec 1;' | pgstyle
 <stdin>: not valid SQL at byte 1: syntax error at or near "selec"
 ```
 
@@ -189,8 +199,8 @@ renderer has no place for a comment inside them. `-v` says which ones, and
 why:
 
 ```console
-$ pgfmt -v --backend syntax queries.sql
-queries.sql:2: kept: pgfmt does not lay it out: a comment pgfmt cannot place
+$ pgstyle -v --backend syntax queries.sql
+queries.sql:2: kept: pgstyle does not lay it out: a comment pgstyle cannot place
 ```
 
 ## Choosing a style
@@ -198,11 +208,11 @@ queries.sql:2: kept: pgfmt does not lay it out: a comment pgfmt cannot place
 ### Keyword case
 
 `--keyword-case lower` (the default) or `--keyword-case upper`. Every
-statement pgfmt formats is spelled one way. Identifiers are never changed,
+statement pgstyle formats is spelled one way. Identifiers are never changed,
 including the ones that look like keywords:
 
 ```console
-$ echo "SELECT name, type FROM users WHERE value > 3;" | pgfmt --keyword-case upper
+$ echo "SELECT name, type FROM users WHERE value > 3;" | pgstyle --keyword-case upper
 SELECT
     name
   , type
@@ -214,7 +224,7 @@ WHERE value > 3;
 
 Two backends lay statements out, and they have different styles:
 
-- `syntax`: pgfmt's own renderer. It handles `select`, `insert`, `update`,
+- `syntax`: pgstyle's own renderer. It handles `select`, `insert`, `update`,
   `delete` and `values`, with commas at the start of lines, and `create
   table`, `create view`, `create index`, `alter table` (see below) and
   `create function` (see [PL/pgSQL](#plpgsql)). It lays
@@ -250,7 +260,7 @@ The default, `--backend auto`, uses `syntax` where it can and `libpg-query`
 for the rest. Pick one backend to get a single style across the whole file:
 
 ```console
-$ echo "select o.id, o.total, c.name from orders o join customers c on c.id = o.customer_id where o.status = 'paid';" | pgfmt --backend libpg-query
+$ echo "select o.id, o.total, c.name from orders o join customers c on c.id = o.customer_id where o.status = 'paid';" | pgstyle --backend libpg-query
 select o.id, o.total, c.name
 from
     orders o
@@ -333,7 +343,7 @@ comment on table orders is 'One row per checkout.';
 
 ## PL/pgSQL
 
-To PostgreSQL, a function body is just a string. pgfmt also parses
+To PostgreSQL, a function body is just a string. pgstyle also parses
 PL/pgSQL bodies, and it formats the SQL statements inside them, indented to
 where each one starts:
 
@@ -383,7 +393,7 @@ PL/pgSQL around them (`declare`, `if`, loops, assignments) and statements with
 `into`. The new body is only used if it parses to the same PL/pgSQL as the old
 one.
 
-pgfmt skips functions that libpg_query cannot compile. It does not look up
+pgstyle skips functions that libpg_query cannot compile. It does not look up
 types outside `pg_catalog` and `public`, so a function that declares a
 variable of type `myschema.thing` is left alone.
 
@@ -402,7 +412,7 @@ variable of type `myschema.thing` is left alone.
    It does catch backend bugs. On Kronor's migrations, libpg_query's
    pretty-printer drops the quotes from function parameter names
    (`"startDate" date` comes out as `startDate date`, which PostgreSQL reads as
-   `startdate`); pgfmt refuses those statements, leaves them as they are, and
+   `startdate`); pgstyle refuses those statements, leaves them as they are, and
    exits 2. One limit: libpg_query 18 leaves empty strings out of its trees, so
    `comment on t is ''` and `comment on t is null` look the same to it.
    PostgreSQL treats them the same too.
@@ -414,7 +424,7 @@ gets `using btree`, and `interval '7 days'` can become `'7 days'::interval`.
 ## Limits
 
 - Files with psql meta-commands (`\set`, `\i`, `\gexec`) are not SQL, and
-  pgfmt rejects them.
+  pgstyle rejects them.
 - Files that set `standard_conforming_strings = off` are left alone.
 - `--backend auto` can mix the two styles in one file. Choose a backend if
   that matters to you.
@@ -423,17 +433,17 @@ gets `using btree`, and `interval '7 days'` can become `'7 days'::interval`.
   `from t`, `-- x`.
 - In Haskell quasiquotes, the `syntax` renderer fails its own check on some
   statements with `$$`-quoted strings that contain comments. Those statements
-  are left as they are and pgfmt exits 2.
+  are left as they are and pgstyle exits 2.
 
 ## Haskell: hasql-th quasiquotes
 
-For `.hs` files, pgfmt formats the SQL in
+For `.hs` files, pgstyle formats the SQL in
 [hasql-th](https://github.com/nikita-volkov/hasql-th) quasiquotes and leaves
 the Haskell alone, so it sits next to fourmolu or ormolu, which leave
 quasiquotes alone:
 
 ```bash
-pgfmt src/**/*.hs
+pgstyle src/**/*.hs
 ```
 
 ```haskell
@@ -473,14 +483,14 @@ have the same quasiquotes and the same text around them.
   aliases.
 - **What is left alone:** single-line quasiquotes, and SQL postgresql-syntax
   does not parse (`-v` lists them), such as DDL in `uncheckedSql`.
-- **Finding them:** pgfmt skips comments, string and character literals as GHC
+- **Finding them:** pgstyle skips comments, string and character literals as GHC
   does, so a `[singletonStatement|` in a string is not a quasiquote. As in GHC
   with `QuasiQuotes` on, `[name|` with no space before the bar opens one.
-- **stdin:** `--haskell` reads it as Haskell: `pgfmt --haskell < Foo.hs`.
+- **stdin:** `--haskell` reads it as Haskell: `pgstyle --haskell < Foo.hs`.
 
 `--dialect hasql-th` lets the `syntax` backend read the same extensions in a
 SQL file, but libpg_query cannot read them, so such a file is not valid SQL to
-pgfmt. The library's `PgFmt.Render.formatSql` formats one quasiquote's SQL.
+pgstyle. The library's `PgStyle.Render.formatSql` formats one quasiquote's SQL.
 
 ### Kronor's extensions
 
@@ -488,39 +498,39 @@ Kronor's [fork of hasql-th](https://github.com/kronor-io/hasql-th) adds
 Haskell targets (`$Record {field = a :: int8}`, `$f (a :: int8, b :: text)`)
 and param fields (`$1.$field`). They need Kronor's fork of
 postgresql-syntax, so they are behind the `kronor-syntax` cabal flag, off by
-default. The flake builds that variant as `pgfmt-kronor`:
+default. The flake builds that variant as `pgstyle-kronor`:
 
 ```bash
-nix run --accept-flake-config github:kronor-io/pgfmt#pgfmt-kronor -- --help
+nix run --accept-flake-config github:kronor-io/pgstyle#pgstyle-kronor -- --help
 ```
 
 With cabal, `cabal.project.kronor` adds Kronor's package repository and turns
 the flag on:
 
 ```bash
-cabal build --project-file=cabal.project.kronor exe:pgfmt
+cabal build --project-file=cabal.project.kronor exe:pgstyle
 ```
 
 ## Library
 
-pgfmt is also a Haskell library:
+pgstyle is also a Haskell library:
 
-- `PgFmt.File.formatFile`: a whole file, with a report on each statement.
-- `PgFmt.Haskell.formatHaskell`: the hasql-th quasiquotes of a Haskell file,
+- `PgStyle.File.formatFile`: a whole file, with a report on each statement.
+- `PgStyle.Haskell.formatHaskell`: the hasql-th quasiquotes of a Haskell file,
   with a report on each.
-- `PgFmt.Render.formatStatement`: one DML statement with the `syntax` layout.
-- `PgFmt.Render.formatSql`: the SQL of one hasql-th quasiquote.
+- `PgStyle.Render.formatStatement`: one DML statement with the `syntax` layout.
+- `PgStyle.Render.formatSql`: the SQL of one hasql-th quasiquote.
 
 ## Building from source
 
-pgfmt links libpg_query 18, the major version that the `libpg-query`
+pgstyle links libpg_query 18, the major version that the `libpg-query`
 package's protobuf definitions were generated from.
 
 With Nix:
 
 ```bash
-nix build                   # result/bin/pgfmt
-nix build .#pgfmt-kronor    # with the kronor-syntax flag
+nix build                   # result/bin/pgstyle
+nix build .#pgstyle-kronor    # with the kronor-syntax flag
 nix flake check             # the test suites, both variants
 ```
 
@@ -532,12 +542,13 @@ word as a quoted identifier: `set lock_timeout to '50ms'` comes out as
 patched library keeps the string.
 
 The release binaries come from `scripts/build-static`, which builds the
-patched libpg_query and pgfmt in a ghc-musl container with Docker and writes
-`dist-static/pgfmt-<arch>-linux.tar.xz`.
+patched libpg_query and pgstyle in a ghc-musl container with Docker and writes
+`dist-static/pgstyle-<arch>-linux.tar.xz`. The image is the `Dockerfile` around
+those binaries.
 
 With cabal (GHC 9.12), everything else comes from Hackage. Build libpg_query
 18 with that patch
-(`patch -p1 < /path/to/pgfmt/nix/libpg_query-set-values-as-strings.patch` in
+(`patch -p1 < /path/to/pgstyle/nix/libpg_query-set-values-as-strings.patch` in
 its source tree) and point cabal at it in `cabal.project.local` (for
 `cabal.project.kronor`, `cabal.project.kronor.local`):
 
@@ -545,23 +556,23 @@ its source tree) and point cabal at it in `cabal.project.local` (for
 package libpg-query
   extra-include-dirs: /path/to/libpg_query/include
   extra-lib-dirs: /path/to/libpg_query/lib
-package pgfmt
+package pgstyle
   extra-include-dirs: /path/to/libpg_query/include
   extra-lib-dirs: /path/to/libpg_query/lib
 ```
 
 ```bash
-cabal build exe:pgfmt
+cabal build exe:pgstyle
 cabal test
 ```
 
 ## Contributing
 
-`docs/readability.md` says how pgfmt's code is meant to read. Inside
+`docs/readability.md` says how pgstyle's code is meant to read. Inside
 `nix develop`, `scripts/check` runs the checks that CI runs:
 
 ```bash
 scripts/check fast    # fourmolu
-scripts/check lint    # pgfmt's hopinion rules, in lint/
+scripts/check lint    # pgstyle's hopinion rules, in lint/
 scripts/check full    # both, then every test
 ```

@@ -1,22 +1,22 @@
 #!/usr/bin/env bash
-# pgfmt linked statically against musl, for the tarballs a version tag attaches
-# to its GitHub release (.github/workflows/check.yml): one file that runs on any
-# Linux distribution, for the architecture this runs on.
+# pgstyle linked statically against musl, for the tarballs a version tag
+# attaches to its GitHub release (.github/workflows/check.yml): one file that
+# runs on any Linux distribution, for the architecture this runs on.
 #
-#   scripts/build-static     writes dist-static/pgfmt-<arch>-linux.tar.xz
+#   scripts/build-static     writes dist-static/pgstyle-<arch>-linux.tar.xz
 #
 # It builds in Alpine, with the GHC of the ghc-musl image, since nixpkgs and
 # haskell.nix would compile a musl GHC first. Outside that image it runs itself
 # in it with docker. cabal's store and build directory stay in dist-static/, so
 # a later run, or CI's cache of that folder, reuses them.
 #
-# The tarball holds bin/pgfmt and its completion scripts under share/, so
+# The tarball holds bin/pgstyle and its completion scripts under share/, so
 # unpacking it into ~/.local or /usr/local installs both.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-# ghc-musl 9.12.4, the GHC the flake builds pgfmt with.
+# ghc-musl 9.12.4, the GHC the flake builds pgstyle with.
 image=docker.io/benz0li/ghc-musl:9.12.4@sha256:e5b180fb35e3520296e86efc3aafc2859821afb1be02ef55a7add7fb893606e5
 
 if [ ! -e /etc/alpine-release ]; then
@@ -57,7 +57,7 @@ cp "$libpg_query/pg_query.h" /usr/local/include/pg_query.h
 cp "$libpg_query/postgres_deparse.h" /usr/local/include/postgres_deparse.h
 
 cabal update --builddir "$out/build"
-cabal build exe:pgfmt \
+cabal build exe:pgstyle \
     --builddir "$out/build" \
     --enable-optimization \
     --enable-executable-static \
@@ -70,37 +70,37 @@ mkdir -p "$stage/bin" \
     "$stage/share/bash-completion/completions" \
     "$stage/share/zsh/site-functions" \
     "$stage/share/fish/vendor_completions.d"
-cp "$(cabal list-bin exe:pgfmt --builddir "$out/build" --enable-optimization)" "$stage/bin/pgfmt"
-strip "$stage/bin/pgfmt"
+cp "$(cabal list-bin exe:pgstyle --builddir "$out/build" --enable-optimization)" "$stage/bin/pgstyle"
+strip "$stage/bin/pgstyle"
 
 # A static binary has no interpreter or shared libraries to ask for; anything
 # else would only run where they are installed.
-if readelf -l "$stage/bin/pgfmt" | grep -q INTERP; then
-    echo "scripts/build-static: $stage/bin/pgfmt is not static" >&2
+if readelf -l "$stage/bin/pgstyle" | grep -q INTERP; then
+    echo "scripts/build-static: $stage/bin/pgstyle is not static" >&2
     exit 1
 fi
 
 # The binary must behave like the flake's: libpg_query formats the SET, and
 # only the patched library keeps its value's single quotes.
-smoke=$(printf "SET lock_timeout TO '50ms';\n" | "$stage/bin/pgfmt")
+smoke=$(printf "SET lock_timeout TO '50ms';\n" | "$stage/bin/pgstyle")
 expected="set lock_timeout to '50ms';"
 if [ "$smoke" != "$expected" ]; then
-    printf 'scripts/build-static: unexpected output from %s:\n%s\n' "$stage/bin/pgfmt" "$smoke" >&2
+    printf 'scripts/build-static: unexpected output from %s:\n%s\n' "$stage/bin/pgstyle" "$smoke" >&2
     exit 1
 fi
 
 # optparse-applicative writes the path it is given into each script, for the
-# script to run. The tarball can be unpacked anywhere, so the scripts run pgfmt
-# from PATH instead.
+# script to run. The tarball can be unpacked anywhere, so the scripts run
+# pgstyle from PATH instead.
 completion() {
-    local binary="$PWD/$stage/bin/pgfmt"
-    "$binary" "--$1-completion-script" "$binary" | sed "s|$binary|pgfmt|g" > "$stage/share/$2"
+    local binary="$PWD/$stage/bin/pgstyle"
+    "$binary" "--$1-completion-script" "$binary" | sed "s|$binary|pgstyle|g" > "$stage/share/$2"
 }
-completion bash bash-completion/completions/pgfmt
-completion zsh zsh/site-functions/_pgfmt
-completion fish fish/vendor_completions.d/pgfmt.fish
+completion bash bash-completion/completions/pgstyle
+completion zsh zsh/site-functions/_pgstyle
+completion fish fish/vendor_completions.d/pgstyle.fish
 
-tarball="$out/pgfmt-$(uname -m)-linux.tar.xz"
+tarball="$out/pgstyle-$(uname -m)-linux.tar.xz"
 tar --sort=name --owner=0 --group=0 --numeric-owner --mtime=@1 \
     -cJf "$tarball" -C "$stage" bin share
 

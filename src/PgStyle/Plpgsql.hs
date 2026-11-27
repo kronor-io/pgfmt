@@ -16,7 +16,7 @@
 -- The result is checked on its own: the function's PL/pgSQL parse before and
 -- after must match once line numbers are dropped and every embedded query is
 -- replaced by its normal form.
-module PgFmt.Plpgsql (
+module PgStyle.Plpgsql (
     formatBodies,
 ) where
 
@@ -34,9 +34,9 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Lens.Micro ((^.))
-import PgFmt.LibPgQuery (Token (..))
-import PgFmt.LibPgQuery qualified as LibPgQuery
 import PgQuery qualified as Pg
+import PgStyle.LibPgQuery (Token (..))
+import PgStyle.LibPgQuery qualified as LibPgQuery
 
 
 -- | An embedded statement to lay out: its line within the body (1 is the line

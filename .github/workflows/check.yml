@@ -33,9 +33,9 @@ jobs:
           matrix="$(nix eval --json '.#githubActions.matrix')"
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
 
-  # pgfmt and its test suites, on each system the flake supports.
+  # pgstyle and its test suites, on each system the flake supports.
   nix-build:
-    name: pgfmt (${{ matrix.system }})
+    name: pgstyle (${{ matrix.system }})
     needs: nix-matrix
     runs-on: ${{ matrix.os }}
     strategy:
@@ -54,7 +54,7 @@ jobs:
           name: kronor-open
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
       - name: Build
-        run: nix build -L .#packages."${MATRIX_SYSTEM}".pgfmt .#packages."${MATRIX_SYSTEM}".pgfmt-kronor
+        run: nix build -L .#packages."${MATRIX_SYSTEM}".pgstyle .#packages."${MATRIX_SYSTEM}".pgstyle-kronor
         env:
           MATRIX_SYSTEM: ${{ matrix.system }}
       - name: Test
@@ -65,7 +65,7 @@ jobs:
         env:
           MATRIX_SYSTEM: ${{ matrix.system }}
 
-  # docs/readability.md: formatting, pgfmt's hopinion rules, the build with its
+  # docs/readability.md: formatting, pgstyle's hopinion rules, the build with its
   # warnings, and every test, in the dev shell.
   check:
     name: Check
@@ -86,7 +86,7 @@ jobs:
       - name: Check
         run: nix develop -L --command scripts/check full
 
-  # A v* tag also builds pgfmt statically against musl (scripts/build-static),
+  # A v* tag also builds pgstyle statically against musl (scripts/build-static),
   # once per architecture, after the flake's build and tests pass.
   release-binary:
     name: Release binary (${{ matrix.arch }})
@@ -107,14 +107,14 @@ jobs:
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: dist-static
-          key: build-static-${{ matrix.arch }}-${{ hashFiles('cabal.project', 'pgfmt.cabal', 'scripts/build-static', 'nix/*.patch') }}
+          key: build-static-${{ matrix.arch }}-${{ hashFiles('cabal.project', 'pgstyle.cabal', 'scripts/build-static', 'nix/*.patch') }}
           restore-keys: build-static-${{ matrix.arch }}-
       - name: Build
         run: scripts/build-static
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: pgfmt-${{ matrix.arch }}-linux
-          path: dist-static/pgfmt-${{ matrix.arch }}-linux.tar.xz
+          name: pgstyle-${{ matrix.arch }}-linux
+          path: dist-static/pgstyle-${{ matrix.arch }}-linux.tar.xz
           if-no-files-found: error
 
   # Both tarballs and their checksums on the tag's GitHub release, which this
@@ -129,7 +129,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          pattern: pgfmt-*-linux
+          pattern: pgstyle-*-linux
           merge-multiple: true
           path: release
       - name: Attach the binaries
@@ -139,8 +139,51 @@ jobs:
         run: |
           set -Eeu
           cd release
-          sha256sum pgfmt-*-linux.tar.xz > SHA256SUMS
+          sha256sum pgstyle-*-linux.tar.xz > SHA256SUMS
           if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes
           fi
-          gh release upload "$GITHUB_REF_NAME" pgfmt-*-linux.tar.xz SHA256SUMS --clobber
+          gh release upload "$GITHUB_REF_NAME" pgstyle-*-linux.tar.xz SHA256SUMS --clobber
+
+  # The same binaries as an image (Dockerfile), for linux/amd64 and
+  # linux/arm64, tagged with the version (v0.1.2.0 is 0.1.2.0) and latest.
+  # Nothing in it runs during the build, so one runner builds both.
+  docker:
+    name: Docker image
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: release-binary
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: pgstyle-*-linux
+          merge-multiple: true
+          path: release
+      - name: Build and push
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          set -Eeu
+          mkdir -p context/amd64 context/arm64
+          tar -xJf release/pgstyle-x86_64-linux.tar.xz -C context/amd64
+          tar -xJf release/pgstyle-aarch64-linux.tar.xz -C context/arm64
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+          docker buildx create --use
+          docker buildx build context \
+            --file Dockerfile \
+            --platform linux/amd64,linux/arm64 \
+            --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+            --label "org.opencontainers.image.version=${GITHUB_REF_NAME#v}" \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            --annotation "index:org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+            --tag "$image:${GITHUB_REF_NAME#v}" \
+            --tag "$image:latest" \
+            --push

@@ -5,7 +5,7 @@
 -- No statement is rewritten unless libpg_query, PostgreSQL's own parser, reads
 -- the result as the same statement: its parse tree, positions aside
 -- ('canonical'), before and after must match. That check is independent of either backend's own.
-module PgFmt.File (
+module PgStyle.File (
     Backend (..),
     KeywordCase (..),
     Options (..),
@@ -23,21 +23,21 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Lens.Micro ((^.))
-import PgFmt.Layout qualified as Layout
-import PgFmt.LibPgQuery (LibPgQueryError (..), PrettyOptions, Statement (..), Token (..))
-import PgFmt.LibPgQuery qualified as LibPgQuery
-import PgFmt.Plpgsql qualified as Plpgsql
-import PgFmt.Render (Dialect (..), FormatError (..))
-import PgFmt.Render qualified as Render
 import PgQuery qualified as Pg
+import PgStyle.Layout qualified as Layout
+import PgStyle.LibPgQuery (LibPgQueryError (..), PrettyOptions, Statement (..), Token (..))
+import PgStyle.LibPgQuery qualified as LibPgQuery
+import PgStyle.Plpgsql qualified as Plpgsql
+import PgStyle.Render (Dialect (..), FormatError (..))
+import PgStyle.Render qualified as Render
 
 
 -- | What lays out a statement.
 data Backend
-    = -- | pgfmt's own layout. DML only; statements it does not lay out
+    = -- | pgstyle's own layout. DML only; statements it does not lay out
       -- are left as they are. Plain SQL is laid out from libpg_query's parse
-      -- tree ("PgFmt.Layout"), comments and all; the hasql-th dialect from
-      -- postgresql-syntax's ("PgFmt.Render"), which leaves statements with
+      -- tree ("PgStyle.Layout"), comments and all; the hasql-th dialect from
+      -- postgresql-syntax's ("PgStyle.Render"), which leaves statements with
       -- comments inside them as they are.
       Syntax
     | -- | libpg_query's pretty-printer. Any statement PostgreSQL parses,
@@ -107,7 +107,7 @@ formatFile :: Options -> Text -> IO (Either LibPgQueryError FileResult)
 formatFile opts text
     -- libpg_query parses strings as with standard_conforming_strings on, the
     -- default since PostgreSQL 9.1. A file that turns it off reads
-    -- backslashes in '...' strings differently from how pgfmt would verify
+    -- backslashes in '...' strings differently from how pgstyle would verify
     -- them, so it is left alone.
     | "standard_conforming_strings" `T.isInfixOf` T.toLower text =
         pure . Right $
@@ -256,7 +256,7 @@ lineAt source offset = 1 + BS.count 10 (BS.take offset source)
 
 
 -- | A statement ready to lay out: with its PL/pgSQL body formatted, if it has
--- one pgfmt formats.
+-- one pgstyle formats.
 data Prepared = Prepared
     { sql :: ByteString
     , bodyChanged :: Bool
@@ -341,7 +341,7 @@ runBackend opts column body interiorComments = case opts.backend of
             laid <- Layout.formatStatementAt (opts.keywordCase == Upper) column sql
             pure case laid of
                 Right formatted -> Right Laid{backend = Syntax, keywordsCased = True, text = formatted}
-                Left reason -> Left (Kept ("pgfmt does not lay it out: " <> reason))
+                Left reason -> Left (Kept ("pgstyle does not lay it out: " <> reason))
         HasqlTh
             -- postgresql-syntax's tree has no comments to place.
             | interiorComments -> pure (Left (Kept "comments inside the statement"))
@@ -367,7 +367,7 @@ runBackend opts column body interiorComments = case opts.backend of
 -- case, so its upper-case keyword tokens are keywords. For the syntax backend
 -- on the hasql-th dialect, the statement is rendered again with its
 -- identifiers masked ('Render.renderIdentifiersMasked'); the tokens that
--- differ between the two renderings are identifiers. ("PgFmt.Layout", for
+-- differ between the two renderings are identifiers. ("PgStyle.Layout", for
 -- plain SQL, writes keywords in the right case itself.)
 applyKeywordCase :: Options -> Backend -> ByteString -> Text -> IO (Either Text Text)
 applyKeywordCase opts used body formatted = do

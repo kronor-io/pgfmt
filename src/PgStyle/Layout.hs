@@ -1,16 +1,16 @@
--- | pgfmt's own layout for DML statements (SELECT, INSERT, UPDATE, DELETE,
+-- | pgstyle's own layout for DML statements (SELECT, INSERT, UPDATE, DELETE,
 -- VALUES), rendered from libpg_query's parse tree; and for CREATE TABLE,
 -- CREATE VIEW, CREATE ... AS, CREATE INDEX, ALTER TABLE and CREATE FUNCTION,
--- in a style of its own ("PgFmt.Layout.Ddl").
+-- in a style of its own ("PgStyle.Layout.Ddl").
 --
--- This is the layout "PgFmt.Render" gives over postgresql-syntax's AST, and
+-- This is the layout "PgStyle.Render" gives over postgresql-syntax's AST, and
 -- it has to stay byte for byte the same: the rules (leading commas, one select
 -- target per line when there are several, @join@ on its own line with @on@
 -- under it, the first @where@ condition inline with hanging @and@s, ...) and
--- the thresholds are "PgFmt.Render"'s, function for function. Where
--- "PgFmt.Render" hands a node to postgresql-syntax's own renderer (and
+-- the thresholds are "PgStyle.Render"'s, function for function. Where
+-- "PgStyle.Render" hands a node to postgresql-syntax's own renderer (and
 -- lower-cases the result), this module writes that renderer's spelling too
--- (the 'MP' mode). It departs from "PgFmt.Render" to keep what the
+-- (the 'MP' mode). It departs from "PgStyle.Render" to keep what the
 -- source wrote (dollar-quoted strings, multi-line strings and numbers stay as
 -- they are, comments are laid out rather than refused, and a blank line
 -- between @values@ rows is kept), and in one rule:
@@ -34,14 +34,14 @@
 -- Keywords are written in the requested case as they are rendered;
 -- identifiers, quoted or not, are never changed.
 --
--- The parts: "PgFmt.Layout.Monad" holds the statement's tokens and what is
--- placed so far; "PgFmt.Layout.Comments", "PgFmt.Layout.Locations" and
--- "PgFmt.Layout.Parens" find comments, locations and parentheses in the
--- source; "PgFmt.Layout.Names" writes identifiers, constants and types;
--- "PgFmt.Layout.Expr" expressions, "PgFmt.Layout.Dml" selects and the other
--- DML statements, and "PgFmt.Layout.Ddl" the DDL ones. This module says
+-- The parts: "PgStyle.Layout.Monad" holds the statement's tokens and what is
+-- placed so far; "PgStyle.Layout.Comments", "PgStyle.Layout.Locations" and
+-- "PgStyle.Layout.Parens" find comments, locations and parentheses in the
+-- source; "PgStyle.Layout.Names" writes identifiers, constants and types;
+-- "PgStyle.Layout.Expr" expressions, "PgStyle.Layout.Dml" selects and the other
+-- DML statements, and "PgStyle.Layout.Ddl" the DDL ones. This module says
 -- which statement goes where.
-module PgFmt.Layout (
+module PgStyle.Layout (
     formatStatement,
     formatStatementAt,
 ) where
@@ -58,14 +58,14 @@ import Data.ProtoLens.Message (Message (..))
 import Data.Text (Text)
 import Data.Text.Encoding qualified as TE
 import Lens.Micro ((^.))
-import PgFmt.Layout.Ddl
-import PgFmt.Layout.Dml
-import PgFmt.Layout.Expr
-import PgFmt.Layout.Monad
-import PgFmt.Layout.Names
-import PgFmt.Layout.Parens
-import PgFmt.LibPgQuery qualified as L
 import PgQuery qualified as Pg
+import PgStyle.Layout.Ddl
+import PgStyle.Layout.Dml
+import PgStyle.Layout.Expr
+import PgStyle.Layout.Monad
+import PgStyle.Layout.Names
+import PgStyle.Layout.Parens
+import PgStyle.LibPgQuery qualified as L
 import Prettyprinter (layoutPretty, (<+>))
 import Prettyprinter.Render.Text (renderStrict)
 
@@ -98,7 +98,7 @@ formatStatementAt upperKeywords column sql = do
                 again <- L.scan (TE.encodeUtf8 out)
                 pure case again of
                     Right scan' | commentTexts (TE.encodeUtf8 out) scan' == commentTexts sql scan -> laid
-                    _ -> Left "a comment pgfmt cannot place"
+                    _ -> Left "a comment pgstyle cannot place"
         _ -> pure laid
   where
     render parsed scanned = case (parsed, scanned) of
@@ -109,7 +109,7 @@ formatStatementAt upperKeywords column sql = do
                 let env = (mkEnv upperKeywords sql scan stmt){column}
                 (doc, st) <- runStateT (runReaderT (statement stmt) env) St{consumed = IS.empty, parenCounts = Map.empty, boolGroups = IS.empty}
                 let unplaced = [i | (i, t) <- IM.toList env.toks, t.text == "(", not (IS.member i st.consumed)]
-                unless (null unplaced) (Left "a parenthesis pgfmt cannot place")
+                unless (null unplaced) (Left "a parenthesis pgstyle cannot place")
                 Right (renderStrict (layoutPretty layoutOpts doc))
             _ -> Left "not a single statement"
     hasComments scan = any isComment (scan ^. Pg.tokens)
@@ -144,4 +144,4 @@ statement n = case node n of
         k <- kw "call"
         d <- funcApplication MP e f
         pure (k <+> d)
-    _ -> unsupported "not DML or DDL pgfmt lays out"
+    _ -> unsupported "not DML or DDL pgstyle lays out"

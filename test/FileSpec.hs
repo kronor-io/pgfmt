@@ -5,7 +5,7 @@ import Data.IORef (modifyIORef', newIORef, readIORef)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
-import PgFmt
+import PgStyle
 import System.Exit (exitFailure)
 
 
@@ -45,7 +45,7 @@ cases =
         , backend = Syntax
         , keywordCase = Lower
         , input = "CREATE SEQUENCE s;\n"
-        , expected = Unchanged "pgfmt does not lay it out: not DML or DDL pgfmt lays out"
+        , expected = Unchanged "pgstyle does not lay it out: not DML or DDL pgstyle lays out"
         }
     , Case
         { name = "syntax: a comment inside a statement stays at its place"
@@ -59,7 +59,7 @@ cases =
         , backend = Syntax
         , keywordCase = Lower
         , input = "SELECT a + -- inside\n b FROM t;\n"
-        , expected = Unchanged "pgfmt does not lay it out: a comment pgfmt cannot place"
+        , expected = Unchanged "pgstyle does not lay it out: a comment pgstyle cannot place"
         }
     , Case
         { name = "syntax: an indented statement's comment lines are indented with it"

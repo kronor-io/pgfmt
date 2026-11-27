@@ -1,14 +1,14 @@
 -- | Expressions and subqueries where they occur, and the parentheses the
 -- source has around them.
-module PgFmt.Layout.Parens where
+module PgStyle.Layout.Parens where
 
 import Control.Monad (unless, when)
 import Data.IntSet qualified as IS
 import Data.Maybe (fromMaybe, isNothing)
 import Lens.Micro ((^.))
-import PgFmt.Layout.Locations
-import PgFmt.Layout.Monad
 import PgQuery qualified as Pg
+import PgStyle.Layout.Locations
+import PgStyle.Layout.Monad
 
 
 -- | An expression where it occurs: its node, the parentheses the source has

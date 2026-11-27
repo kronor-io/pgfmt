@@ -2,14 +2,14 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE FunctionalDependencies #-}
 
--- | The postgresql-syntax backend: pgfmt's own layout for DML statements
+-- | The postgresql-syntax backend: pgstyle's own layout for DML statements
 -- (SELECT, INSERT, UPDATE, DELETE, VALUES), with hasql-th's extensions.
 --
 -- Built against Hackage's postgresql-syntax, the hasql-th dialect is upstream
 -- hasql-th's: nullability markers (@int8?@). With the @kronor-syntax@ flag,
 -- which needs Kronor's fork of postgresql-syntax, it also takes the fork's
 -- Haskell targets (@$Record {..}@, @$f (a, b)@) and param fields (@$1.$field@).
-module PgFmt.Render (
+module PgStyle.Render (
     Dialect (..),
     FormatError (..),
     formatStatement,
@@ -123,7 +123,7 @@ formatStatement dialect sql =
 -- identifier's length (so the layout, and the token stream, are the same as
 -- 'formatStatement''s) and survives the renderer lower-casing what it inlines:
 -- a token whose text differs between the two renderings is an identifier.
--- That is how "PgFmt.File" tells keywords from identifiers spelled like
+-- That is how "PgStyle.File" tells keywords from identifiers spelled like
 -- keywords (@name@, @type@, @value@) when it changes keyword case.
 renderIdentifiersMasked :: Dialect -> Text -> Either FormatError Text
 renderIdentifiersMasked dialect sql =

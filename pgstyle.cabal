@@ -1,16 +1,19 @@
 cabal-version: 3.0
-name:          pgfmt
-version:       0.1.1.0
+name:          pgstyle
+version:       0.1.2.0
 synopsis:      Format PostgreSQL, checked against PostgreSQL's own parser
 description:
-  pgfmt formats SQL files statement by statement. Each statement is laid out
-  either by pgfmt's own renderer (DML, over libpg_query's parse tree) or by
+  pgstyle formats SQL files statement by statement. Each statement is laid out
+  either by pgstyle's own renderer (DML, over libpg_query's parse tree) or by
   libpg_query's pretty-printer (anything PostgreSQL parses), and is only
   rewritten if libpg_query reads the result as the same statement.
 
 category:      Database
-homepage:      https://github.com/kronor-io/pgfmt
-bug-reports:   https://github.com/kronor-io/pgfmt/issues
+homepage:      https://github.com/kronor-io/pgstyle
+bug-reports:   https://github.com/kronor-io/pgstyle/issues
+license:       MIT
+license-file:  LICENSE
+copyright:     2026 Kronor
 author:        Kronor
 maintainer:    dev@kronor.io
 build-type:    Simple
@@ -20,7 +23,7 @@ extra-doc-files:
 
 source-repository head
   type:     git
-  location: https://github.com/kronor-io/pgfmt
+  location: https://github.com/kronor-io/pgstyle
 
 flag kronor-syntax
   description:
@@ -53,25 +56,25 @@ library
   import:          shared
   hs-source-dirs:  src
   exposed-modules:
-    PgFmt
-    PgFmt.File
-    PgFmt.Haskell
-    PgFmt.Layout
-    PgFmt.LibPgQuery
-    PgFmt.Plpgsql
-    PgFmt.Render
+    PgStyle
+    PgStyle.File
+    PgStyle.Haskell
+    PgStyle.Layout
+    PgStyle.LibPgQuery
+    PgStyle.Plpgsql
+    PgStyle.Render
 
   other-modules:
-    PgFmt.Layout.Comments
-    PgFmt.Layout.Ddl
-    PgFmt.Layout.Dml
-    PgFmt.Layout.Expr
-    PgFmt.Layout.Locations
-    PgFmt.Layout.Monad
-    PgFmt.Layout.Names
-    PgFmt.Layout.Parens
+    PgStyle.Layout.Comments
+    PgStyle.Layout.Ddl
+    PgStyle.Layout.Dml
+    PgStyle.Layout.Expr
+    PgStyle.Layout.Locations
+    PgStyle.Layout.Monad
+    PgStyle.Layout.Names
+    PgStyle.Layout.Parens
 
-  c-sources:       cbits/pgfmt.c
+  c-sources:       cbits/pgstyle.c
   extra-libraries: pg_query
   build-depends:
     , aeson
@@ -97,14 +100,14 @@ library
   else
     build-depends: postgresql-syntax ==0.5.0.3 || >=0.5.0.4 && <0.6
 
-executable pgfmt
+executable pgstyle
   import:         shared
   hs-source-dirs: app
   main-is:        Main.hs
   build-depends:
     , base
     , optparse-applicative
-    , pgfmt
+    , pgstyle
     , text
 
 -- The renderer's fixtures, carried over from Kronor's hasql-th-format.
@@ -116,7 +119,7 @@ test-suite render
   default-extensions: QuasiQuotes
   build-depends:
     , base
-    , pgfmt
+    , pgstyle
     , postgresql-syntax
     , string-interpolate
     , text
@@ -131,7 +134,7 @@ test-suite file
   main-is:        FileSpec.hs
   build-depends:
     , base
-    , pgfmt
+    , pgstyle
     , text
 
 test-suite haskell
@@ -141,10 +144,10 @@ test-suite haskell
   main-is:        HaskellSpec.hs
   build-depends:
     , base
-    , pgfmt
+    , pgstyle
     , text
 
--- pgfmt's layout over libpg_query's tree: the same as the renderer's over
+-- pgstyle's layout over libpg_query's tree: the same as the renderer's over
 -- postgresql-syntax's, and what only it lays out.
 test-suite layout
   import:         shared
@@ -153,5 +156,5 @@ test-suite layout
   main-is:        LayoutSpec.hs
   build-depends:
     , base
-    , pgfmt
+    , pgstyle
     , text

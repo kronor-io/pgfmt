@@ -3,7 +3,7 @@
 {-# LANGUAGE QuasiQuotes #-}
 
 -- | R2: a top-level signature does not pass wide or nested tuples.
-module PgFmt.Lint.Rule.NamedTuples (rule) where
+module PgStyle.Lint.Rule.NamedTuples (rule) where
 
 import Data.Generics (listify)
 import Data.String.Interpolate (iii, __i)
@@ -15,13 +15,13 @@ import Hopinion.Facts.Module (ModuleContext)
 import Hopinion.Parse (ParsedModule, parsedModuleDecls)
 import Hopinion.Rule
 import Hopinion.Rule.Id (RuleId (..))
-import PgFmt.Lint.Syntax
+import PgStyle.Lint.Syntax
 
 
 rule :: Rule
 rule =
     Rule
-        { ruleId = RuleId "PgfmtNamedTuples"
+        { ruleId = RuleId "PgstyleNamedTuples"
         , ruleText =
             [iii|
                 A top-level signature takes and returns no tuple of three or more, and no
