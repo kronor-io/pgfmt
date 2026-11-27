@@ -1,6 +1,6 @@
 cabal-version: 3.0
 name:          pgstyle
-version:       0.1.1.0
+version:       0.1.2.0
 synopsis:      Format PostgreSQL, checked against PostgreSQL's own parser
 description:
   pgstyle formats SQL files statement by statement. Each statement is laid out

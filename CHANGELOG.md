@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.2.0
 
 * pgfmt is now pgstyle, since another project is called pgfmt: the package,
   the command, the library's modules (`PgStyle.*`), the flake's outputs
