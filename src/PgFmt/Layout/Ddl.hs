@@ -833,8 +833,53 @@ createFunction statement f = do
         (tableCols, args) = (filter isTable params, filter (not . isTable) params)
     argDs <- paramList args (open + 1) close
     end <- (+ 1) <$> lastTok
-    -- The clauses, in source order: @returns@ (right after the arguments,
-    -- if there), then each option.
+    parts <- functionParts f close end
+    returnsLine <- case parts.returnsEnd of
+        Nothing -> pure mempty
+        Just returnsEnd -> do
+            d <- returnsClause f tableCols (close + 1) returnsEnd
+            (<> d) <$> brk mempty (close + 1)
+    beforeDs <- forM parts.before \c -> do
+        d <- looseRun c.start c.end
+        b <- brk mempty c.start
+        pure (b <> d)
+    argsD <- itemList functionHeaderThreshold (header <+> name) argDs close
+    let clauseLines = returnsLine <> mconcat beforeDs
+    bodyD <- case parts.body of
+        StandardBody at b -> do
+            bb <- brk mempty at
+            d <- standardBody statement b at end
+            pure (bb <> d)
+        QuotedBody at -> quotedBody at parts.asEnd parts.after
+    pure (header <+> name <> argsD <> nest indentSize clauseLines <> bodyD)
+  where
+    firstName j = do
+        t <- tokM j
+        case t of
+            Just tk | tk.kind == Pg.IDENT || (tk.isKeyword && T.toLower tk.text `notElem` ["create", "or", "replace", "function", "procedure"]) -> pure j
+            Just _ -> firstName (j + 1)
+            Nothing -> unsupported "a function pgfmt cannot read"
+
+
+-- | Where the parts of a function after its arguments are.
+data FunctionParts = FunctionParts
+    { returnsEnd :: Maybe Int
+    -- ^ With @returns@ right after the arguments, the token after it.
+    , body :: FunctionBody
+    , before :: [Clause]
+    -- ^ The clauses before the body.
+    , after :: [Clause]
+    -- ^ The clauses after a quoted body.
+    , asEnd :: Int
+    -- ^ The token after @as@'s clause, the quoted body.
+    }
+
+
+-- | Find the clauses of a function whose arguments close at @close@ and
+-- which ends before @end@: @returns@ (right after the arguments, if
+-- there), then each option, in source order, and the body.
+functionParts :: Pg.CreateFunctionStmt -> Int -> Int -> R FunctionParts
+functionParts f close end = do
     opts <- forM (f ^. Pg.options) \o -> case node o of
         Just (Pg.Node'DefElem de) -> (de,) <$> tokAt (fromIntegral (de ^. Pg.location))
         _ -> unsupported "a function option pgfmt cannot read"
@@ -843,12 +888,12 @@ createFunction statement f = do
         Nothing -> pure Nothing
     let optStarts = map snd opts
         firstOpt = foldr min (fromMaybe end standardAt) optStarts
-    returnsD <-
+    returnsEnd <-
         if close + 1 < firstOpt
             then do
                 isReturns <- tokIs (close + 1) "returns"
                 unless isReturns (unsupported "a function pgfmt cannot read")
-                Just <$> returnsClause f tableCols (close + 1) firstOpt
+                pure (Just firstOpt)
             else pure Nothing
     -- Where the body starts: @as@, or a SQL-standard body after every
     -- clause.
@@ -864,32 +909,14 @@ createFunction statement f = do
             StandardBody{} -> map (min bodyAt) (drop 1 optStarts ++ [end])
             QuotedBody{} -> drop 1 optStarts ++ [end]
         clauses = zipWith Clause optStarts ends
-        before = [c | c <- clauses, c.start < bodyAt]
-        after = [c | c <- clauses, c.start > bodyAt]
-        asEnd = fromMaybe end (listToMaybe [c.end | c <- clauses, c.start == bodyAt])
-    beforeDs <- forM before \c -> do
-        d <- looseRun c.start c.end
-        b <- brk mempty c.start
-        pure (b <> d)
-    returnsLine <- case returnsD of
-        Nothing -> pure mempty
-        Just d -> (<> d) <$> brk mempty (close + 1)
-    argsD <- itemList functionHeaderThreshold (header <+> name) argDs close
-    let clauseLines = returnsLine <> mconcat beforeDs
-    bodyD <- case body of
-        StandardBody at b -> do
-            bb <- brk mempty at
-            d <- standardBody statement b at end
-            pure (bb <> d)
-        QuotedBody at -> quotedBody at asEnd after
-    pure (header <+> name <> argsD <> nest indentSize clauseLines <> bodyD)
-  where
-    firstName j = do
-        t <- tokM j
-        case t of
-            Just tk | tk.kind == Pg.IDENT || (tk.isKeyword && T.toLower tk.text `notElem` ["create", "or", "replace", "function", "procedure"]) -> pure j
-            Just _ -> firstName (j + 1)
-            Nothing -> unsupported "a function pgfmt cannot read"
+    pure
+        FunctionParts
+            { returnsEnd
+            , body
+            , before = [c | c <- clauses, c.start < bodyAt]
+            , after = [c | c <- clauses, c.start > bodyAt]
+            , asEnd = fromMaybe end (listToMaybe [c.end | c <- clauses, c.start == bodyAt])
+            }
 
 
 -- | Where a function's body is: in quotes after @as@ at this token, or a
@@ -1141,21 +1168,29 @@ createTrigger t = do
     let nameAt = trigAt + 1
     name <- identAt nameAt (t ^. Pg.trigname)
     end <- (+ 1) <$> lastTok
-    starts <- clauseStarts (nameAt + 1) end
-    case starts of
-        s0 : _ | s0 == nameAt + 1 -> pure ()
+    clauses <- clauseStarts (nameAt + 1) end
+    case clauses of
+        (s0, _) : _ | s0 == nameAt + 1 -> pure ()
         _ -> unsupported "a trigger pgfmt cannot read"
-    let ends = drop 1 starts ++ [end]
-    ds <- forM (zip starts ends) \(s, e) -> do
-        w <- tokL s
-        d <- case w of
-            "when" -> do
+    -- The clauses the tree says are there are the ones found.
+    let found kind = kind `elem` map snd clauses
+    unless
+        ( found When == isJust (t ^. Pg.maybe'whenClause)
+            && found Referencing == not (null (t ^. Pg.transitionRels))
+            && found FromTable == isJust (t ^. Pg.maybe'constrrel)
+        )
+        (unsupported "a trigger pgfmt cannot read")
+    let starts = map fst clauses
+        ends = drop 1 starts ++ [end]
+    ds <- forM (zip clauses ends) \((s, kind), e) -> do
+        d <- case kind of
+            When -> do
                 close <- expectParen (s + 1)
                 unless (close == e - 1) (unsupported "a trigger pgfmt cannot read")
                 c <- req "a trigger's condition" (t ^. Pg.maybe'whenClause)
                 k <- kw "when"
                 (k <+>) <$> checkCondition c
-            "execute" -> do
+            Execute -> do
                 names <- strsOf (t ^. Pg.funcname)
                 ws <- wordsRun s (s + 2)
                 f <- qualNameAt (s + 2) names
@@ -1175,23 +1210,53 @@ createTrigger t = do
             "trigger" -> pure j
             _ | w `elem` ["create", "or", "replace", "constraint"] -> findTrigger (j + 1)
             _ -> unsupported "a trigger pgfmt cannot read"
-    -- Where each clause starts: the top-level words that start one.
+    -- Where each clause starts, and what it is: the top-level words that
+    -- start one.
     clauseStarts j b
         | j >= b = pure []
         | otherwise = do
             w <- tokL j
             prev <- tokL (j - 1)
             next <- tokL (j + 1)
-            let starts =
-                    w `elem` ["before", "after", "instead", "on", "from", "referencing", "for", "when", "execute"]
-                        || (w == "not" && next == "deferrable")
-                        || (w == "deferrable" && prev /= "not")
-                        || (w == "initially" && prev /= "deferrable")
             rest <-
                 if w == "("
                     then matchOf j >>= maybe (unsupported "an unclosed parenthesis") (\c -> clauseStarts (c + 1) b)
                     else clauseStarts (j + 1) b
-            pure (if starts then j : rest else rest)
+            pure case triggerClause prev w next of
+                Just kind -> (j, kind) : rest
+                Nothing -> rest
+
+
+-- | A clause of @create trigger@.
+data TriggerClause
+    = -- | @before@, @after@ or @instead of@, and the events.
+      Timing
+    | OnTable
+    | -- | A constraint trigger's @from@ table.
+      FromTable
+    | -- | @deferrable@, @not deferrable@, @initially ...@.
+      Deferral
+    | Referencing
+    | ForEach
+    | When
+    | Execute
+    deriving stock (Eq)
+
+
+-- | The clause a word starts, given the words around it, if it starts one.
+triggerClause :: Text -> Text -> Text -> Maybe TriggerClause
+triggerClause prev w next = case w of
+    _ | w `elem` ["before", "after", "instead"] -> Just Timing
+    "on" -> Just OnTable
+    "from" -> Just FromTable
+    "referencing" -> Just Referencing
+    "for" -> Just ForEach
+    "when" -> Just When
+    "execute" -> Just Execute
+    "not" | next == "deferrable" -> Just Deferral
+    "deferrable" | prev /= "not" -> Just Deferral
+    "initially" | prev /= "deferrable" -> Just Deferral
+    _ -> Nothing
 
 
 -- | The longest @grant@ or @revoke@ that stays on one line.
@@ -1199,14 +1264,27 @@ grantInlineThreshold :: Int
 grantInlineThreshold = 80
 
 
+-- | The clauses of a @grant@ or @revoke@, as its tree says: whether it is of
+-- privileges @on@ objects, or of roles; and the word before the roles.
+data GrantClauses = GrantClauses
+    { onObjects :: Bool
+    , grantees :: Text
+    }
+
+
+-- | @to@ for a grant, @from@ for a revoke.
+granteesWord :: Bool -> Text
+granteesWord isGrant = if isGrant then "to" else "from"
+
+
 -- | @grant@ and @revoke@, of privileges (@on@ objects) or of roles: on one
 -- line if short; otherwise the privileges on the first line, then @on@ the
 -- objects and @to@ (or @from@) the roles, each on a line of its own.
-grantStmt :: Bool -> R D
-grantStmt hasOn = do
+grantStmt :: GrantClauses -> R D
+grantStmt clauses = do
     end <- (+ 1) <$> lastTok
-    onAt <- if hasOn then Just <$> (firstTop ["on"] 1 end >>= req "a grant") else pure Nothing
-    toAt <- firstTop ["to", "from"] (maybe 1 (+ 1) onAt) end >>= req "a grant"
+    onAt <- if clauses.onObjects then Just <$> (firstTop ["on"] 1 end >>= req "a grant") else pure Nothing
+    toAt <- firstTop [clauses.grantees] (maybe 1 (+ 1) onAt) end >>= req "a grant"
     let starts = 0 : catMaybes [onAt, Just toAt]
         ends = drop 1 starts ++ [end]
     ps <- forM (zip starts ends) (uncurry looseRun)

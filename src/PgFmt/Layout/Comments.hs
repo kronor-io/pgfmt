@@ -8,7 +8,6 @@
 module PgFmt.Layout.Comments where
 
 import Control.Monad (forM)
-import Control.Monad.Except (MonadError (catchError))
 import Control.Monad.Reader (asks)
 import Data.IntMap.Strict qualified as IM
 import Data.Text (Text)
@@ -168,8 +167,3 @@ clauseAt alternatives n = case locsNode n of
     ls -> do
         i <- tokAt (minimum ls)
         firstJustM (`wordsBefore` i) alternatives
-
-
--- | What a check finds, or 'Nothing' where it fails.
-attempt :: R a -> R (Maybe a)
-attempt m = (Just <$> m) `catchError` \_ -> pure Nothing

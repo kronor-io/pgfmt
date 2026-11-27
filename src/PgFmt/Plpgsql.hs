@@ -73,33 +73,43 @@ formatBodies layOut stmt raw = case functionBody raw of
         case (parsed >>= decodeJson, range) of
             (Right [fn], Just (bodyStart, bodyEnd)) -> do
                 let body = slice bodyStart bodyEnd stmt
-                bodyScan <- LibPgQuery.scan body
-                case bodyScan of
-                    Left _ -> pure (Right Nothing)
-                    Right scanResult -> do
-                        let located = locateAll body (LibPgQuery.tokens scanResult) (targets fn)
-                        laidOut <- traverse (layOutOne body) located
-                        case sequence laidOut of
-                            Left reason -> pure (Left reason)
-                            Right edits -> case [e | Just e <- edits] of
-                                [] -> pure (Right Nothing)
-                                changes -> do
-                                    let newBody = splice body changes
-                                        newStmt = BS.take bodyStart stmt <> newBody <> BS.drop bodyEnd stmt
-                                    checks <-
-                                        sequence
-                                            [ sameOutsideBody stmt newStmt
-                                            , samePlpgsql stmt newStmt
-                                            , sameComments body newBody
-                                            ]
-                                    pure case [r | Just r <- checks] of
-                                        [] -> Right (Just newStmt)
-                                        reason : _ -> Left ("PL/pgSQL body: " <> reason)
+                formatted <- formatQueries layOut body fn
+                case formatted of
+                    Left reason -> pure (Left reason)
+                    Right Nothing -> pure (Right Nothing)
+                    Right (Just newBody) -> do
+                        let newStmt = BS.take bodyStart stmt <> newBody <> BS.drop bodyEnd stmt
+                        problem <- bodyProblem stmt newStmt body newBody
+                        pure case problem of
+                            Nothing -> Right (Just newStmt)
+                            Just reason -> Left ("PL/pgSQL body: " <> reason)
             -- One libpg_query cannot compile, or a body this pass cannot find:
             -- leave it.
             _ -> pure (Right Nothing)
+
+
+-- | A body with each of its function's queries laid out: 'Nothing' when
+-- none changes or the body does not scan, 'Left' when laying one out
+-- fails.
+formatQueries ::
+    (Int -> ByteString -> IO (Either Text (Maybe Text))) ->
+    ByteString ->
+    Value ->
+    IO (Either Text (Maybe ByteString))
+formatQueries layOut body fn = do
+    bodyScan <- LibPgQuery.scan body
+    case bodyScan of
+        Left _ -> pure (Right Nothing)
+        Right scanResult -> do
+            let located = locateAll body (LibPgQuery.tokens scanResult) (targets fn)
+            laidOut <- traverse layOutQuery located
+            pure case sequence laidOut of
+                Left reason -> Left reason
+                Right edits -> case [e | Just e <- edits] of
+                    [] -> Right Nothing
+                    changes -> Right (Just (splice body changes))
   where
-    layOutOne body q = do
+    layOutQuery q = do
         result <- layOut q.indent (slice q.start q.end body)
         pure case result of
             Left reason -> Left reason
@@ -107,6 +117,22 @@ formatBodies layOut stmt raw = case functionBody raw of
             Right (Just new)
                 | TE.encodeUtf8 new == slice q.start q.end body -> Right Nothing
                 | otherwise -> Right (Just Edit{start = q.start, end = q.end, text = TE.encodeUtf8 new})
+
+
+-- | Why a statement with a rewritten body is not the same function, if it
+-- is not: text outside the body changed, the PL/pgSQL parse differs, or
+-- the comments do. All three are checked; the first problem is reported.
+bodyProblem :: ByteString -> ByteString -> ByteString -> ByteString -> IO (Maybe Text)
+bodyProblem stmt newStmt body newBody = do
+    checks <-
+        sequence
+            [ sameOutsideBody stmt newStmt
+            , samePlpgsql stmt newStmt
+            , sameComments body newBody
+            ]
+    pure case [r | Just r <- checks] of
+        [] -> Nothing
+        reason : _ -> Just reason
 
 
 decodeJson :: ByteString -> Either LibPgQuery.LibPgQueryError [Value]

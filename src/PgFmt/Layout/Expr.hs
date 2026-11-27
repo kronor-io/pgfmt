@@ -99,10 +99,6 @@ core mode e = case node e.en of
 f >=> g = \x -> f x >>= g
 
 
-req :: Text -> Maybe a -> R a
-req what = maybe (unsupported (what <> " with a part missing")) pure
-
-
 columnRef :: Pg.ColumnRef -> R D
 columnRef c = do
     at <- tokAt (fromIntegral (c ^. Pg.location))
@@ -1070,11 +1066,11 @@ asFuncApp e
 
 -- | postgresql-syntax's @func_expr_common_subexpr@ forms.
 data Subexpr
-    = SubCoalesce [Pg.Node]
-    | SubGreatest [Pg.Node]
-    | SubLeast [Pg.Node]
-    | SubNullIf Pg.Node Pg.Node
-    | SubCast Pg.Node Pg.TypeName
+    = -- | @coalesce@, @greatest@, @least@ or @nullif@: its keyword, its
+      -- location, and its arguments.
+      SubRows Text Int32 [Pg.Node]
+    | -- | @cast(x as t)@: its location, the expression and the type.
+      SubCast Int32 Pg.Node Pg.TypeName
     | -- | @extract@, @position@, @substring@, @trim@, @overlay@.
       SubSyntax
     | -- | @current_date@ and the like.
@@ -1085,19 +1081,19 @@ asSubexpr :: E -> R (Maybe Subexpr)
 asSubexpr e
     | e.lv > 0 = pure Nothing
     | otherwise = case node e.en of
-        Just (Pg.Node'CoalesceExpr c) -> pure (Just (SubCoalesce (c ^. Pg.args)))
-        Just (Pg.Node'MinMaxExpr c) -> pure (Just ((if c ^. Pg.op == Pg.IS_GREATEST then SubGreatest else SubLeast) (c ^. Pg.args)))
+        Just (Pg.Node'CoalesceExpr c) -> pure (Just (SubRows "coalesce" (c ^. Pg.location) (c ^. Pg.args)))
+        Just (Pg.Node'MinMaxExpr c) -> pure (Just (SubRows (if c ^. Pg.op == Pg.IS_GREATEST then "greatest" else "least") (c ^. Pg.location) (c ^. Pg.args)))
         Just (Pg.Node'AExpr a)
             | a ^. Pg.kind == Pg.AEXPR_NULLIF
             , Just l <- a ^. Pg.maybe'lexpr
             , Just r <- a ^. Pg.maybe'rexpr ->
-                pure (Just (SubNullIf l r))
+                pure (Just (SubRows "nullif" (a ^. Pg.location) [l, r]))
         Just (Pg.Node'TypeCast tc)
             | Just tn <- tc ^. Pg.maybe'typeName
             , Just arg <- tc ^. Pg.maybe'arg -> do
                 form <- castForm tc
                 pure case form of
-                    CastCall -> Just (SubCast arg tn)
+                    CastCall -> Just (SubCast (tc ^. Pg.location) arg tn)
                     _ -> Nothing
         Just (Pg.Node'FuncCall f) | not (hasExtras f) -> do
             call <- classifyCall f
@@ -1109,19 +1105,47 @@ asSubexpr e
         _ -> pure Nothing
 
 
-isWrapEligible :: E -> R Bool
-isWrapEligible e = do
+-- | What an expression is, as the wrapped layout tells expressions apart:
+-- in parentheses, under a @::@ cast, an ordinary call, one of
+-- postgresql-syntax's common subexpressions, or something else.
+data Shape
+    = InParens E (Maybe Pg.A_Indirection)
+    | UnderCast E Pg.TypeName
+    | Application Pg.FuncCall
+    | CommonSubexpr Subexpr
+    | OtherShape
+
+
+-- | An expression's 'Shape'. All four classifiers run, in this order,
+-- whichever matches: they are not pure. 'inParens' and 'asColonCast' take
+-- the child expression, which places the parentheses around it, and
+-- 'asFuncApp' and 'asSubexpr' classify calls, which places a call's own
+-- parenthesis. Stopping at the first match would leave some unplaced, or
+-- change which refusal comes first.
+shapeOf :: E -> R Shape
+shapeOf e = do
     paren <- inParens e
     cast <- asColonCast e
     app <- asFuncApp e
     subexpr <- asSubexpr e
-    case (paren, cast, app, subexpr) of
-        (Just (inner, _), _, _, _) -> isWrapEligible inner
-        (_, Just (inner, _), _, _) -> isWrapEligible inner
-        (_, _, Just _, _) -> pure True
-        (_, _, _, Just SubValue) -> pure False
-        (_, _, _, Just _) -> pure True
-        _ -> case node e.en of
+    pure case (paren, cast, app, subexpr) of
+        (Just (inner, ind), _, _, _) -> InParens inner ind
+        (_, Just (inner, tn), _, _) -> UnderCast inner tn
+        (_, _, Just f, _) -> Application f
+        (_, _, _, Just sub) -> CommonSubexpr sub
+        _ -> OtherShape
+
+
+isWrapEligible :: E -> R Bool
+isWrapEligible e = do
+    shape <- shapeOf e
+    case shape of
+        InParens inner _ -> isWrapEligible inner
+        UnderCast inner _ -> isWrapEligible inner
+        Application _ -> pure True
+        CommonSubexpr SubValue -> pure False
+        CommonSubexpr _ -> pure True
+        OtherShape -> case node e.en of
             _ | e.lv > 0 -> pure False
             Just (Pg.Node'AArrayExpr a) -> do
                 keyword <- arrayKeyword a
@@ -1175,7 +1199,7 @@ funcAppArgCount f
 -- every other one from the first a string literal.
 looksLikeKeyValuePairs :: E -> [Pg.Node] -> R Bool
 looksLikeKeyValuePairs e args
-    | n < 4 || odd n = pure False
+    | n < keyValueMinArguments || odd n = pure False
     | otherwise = allM key [a | (i, a) <- zip [0 :: Int ..] args, even i]
   where
     n = length args
@@ -1205,6 +1229,12 @@ hasPairShapedCall e = do
         Nothing -> pure False
 
 
+-- | "PgFmt.Render"'s: the fewest arguments a call laid out as key/value
+-- pairs has.
+keyValueMinArguments :: Int
+keyValueMinArguments = 4
+
+
 inlineLengthThreshold, selectTargetInlineThreshold, subqueryInlineThreshold, funcWrapThreshold :: Int
 inlineLengthThreshold = 60
 selectTargetInlineThreshold = 150
@@ -1225,19 +1255,16 @@ exprMaybeWrap e = do
 
 exprWrapped :: E -> R D
 exprWrapped e = do
-    paren <- inParens e
-    cast <- asColonCast e
-    app <- asFuncApp e
-    subexpr <- asSubexpr e
-    case (paren, cast, app, subexpr) of
-        (Just (inner, ind), _, _, _) -> inParensWrapped e inner ind
-        (_, Just (inner, tn), _, _) -> do
+    shape <- shapeOf e
+    case shape of
+        InParens inner ind -> inParensWrapped e inner ind
+        UnderCast inner tn -> do
             d <- exprWrapped inner
             t <- typeName tn
             pure (d <> "::" <> t)
-        (_, _, Just f, _) -> funcApplicationWrapped e f
-        (_, _, _, Just sub) -> subexprWrapped e sub
-        _ -> case node e.en of
+        Application f -> funcApplicationWrapped e f
+        CommonSubexpr sub -> subexprWrapped e sub
+        OtherShape -> case node e.en of
             Just (Pg.Node'AArrayExpr a) -> do
                 keyword <- arrayKeyword a
                 if keyword
@@ -1411,12 +1438,14 @@ funcArgMaybeWrap e n = do
 
 subexprWrapped :: E -> Subexpr -> R D
 subexprWrapped e = \case
-    SubCoalesce args -> rows "coalesce" loc args
-    SubGreatest args -> rows "greatest" loc args
-    SubLeast args -> rows "least" loc args
-    SubNullIf l r -> rows "nullif" loc [l, r]
-    SubCast arg tn -> do
-        open <- castLoc >>= nextParen
+    SubRows name at args -> do
+        open <- tokAt (fromIntegral at) >>= nextParen
+        _ <- expectParen open
+        ds <- traverse (child e.en >=> exprMaybeWrap) args
+        k <- kw name
+        pure (k <> "(" <> nest indentSize (argRows ds) <> hardline <> ")")
+    SubCast at arg tn -> do
+        open <- tokAt (fromIntegral at) >>= nextParen
         _ <- expectParen open
         a <- child e.en arg >>= exprMaybeWrap
         t <- typeName tn
@@ -1424,21 +1453,6 @@ subexprWrapped e = \case
         as <- kw "as"
         pure (k <> "(" <> nest indentSize (hardline <> a <+> as <+> t) <> hardline <> ")")
     _ -> expr MR e
-  where
-    loc = case node e.en of
-        Just (Pg.Node'CoalesceExpr x) -> x ^. Pg.location
-        Just (Pg.Node'MinMaxExpr x) -> x ^. Pg.location
-        Just (Pg.Node'AExpr x) -> x ^. Pg.location
-        _ -> -1
-    castLoc = case node e.en of
-        Just (Pg.Node'TypeCast tc) -> tokAt (fromIntegral (tc ^. Pg.location))
-        _ -> unsupported "a cast"
-    rows name at args = do
-        open <- tokAt (fromIntegral at) >>= nextParen
-        _ <- expectParen open
-        ds <- traverse (child e.en >=> exprMaybeWrap) args
-        k <- kw name
-        pure (k <> "(" <> nest indentSize (argRows ds) <> hardline <> ")")
 
 
 arrayWrapped :: E -> Pg.A_ArrayExpr -> R D

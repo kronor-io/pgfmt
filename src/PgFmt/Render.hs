@@ -464,6 +464,17 @@ funcWrapThreshold :: Int
 funcWrapThreshold = 2
 
 
+-- | The fewest arguments a call laid out as key/value pairs has.
+keyValueMinArguments :: Int
+keyValueMinArguments = 4
+
+
+-- | The most columns a function alias or an insert keeps on one line.
+funcAliasInlineColumns, insertInlineColumns :: Int
+funcAliasInlineColumns = 3
+insertInlineColumns = 3
+
+
 -- | Number of positional arguments in a function application (variadic args
 -- count as one each, star/none count as zero).
 funcAppArgCount :: Ast.FuncApplication -> Int
@@ -568,7 +579,7 @@ topLevelFuncApp = \case
 looksLikeKeyValuePairs :: [Ast.FuncArgExpr] -> Bool
 looksLikeKeyValuePairs args =
     let n = length args
-     in even n && n >= 4 && all isLiteralKey (zip [0 :: Int ..] args)
+     in even n && n >= keyValueMinArguments && all isLiteralKey (zip [0 :: Int ..] args)
   where
     isLiteralKey (i, arg)
         | even i = case arg of
@@ -1147,7 +1158,7 @@ renderTableRefDoc = \case
 renderFuncAliasClauseDoc :: Ast.FuncAliasClause -> Doc ann
 renderFuncAliasClauseDoc = \case
     Ast.AliasFuncAliasClause (Ast.AliasClause hasAs name (Just cols))
-        | length (toL cols) > 3 ->
+        | length (toL cols) > funcAliasInlineColumns ->
             let prefix = if hasAs then "as " else mempty
                 colDocs = map (inline render) (toL cols)
              in prefix
@@ -1933,7 +1944,7 @@ renderInsertColumnList :: Ast.InsertColumnList -> Doc ann
 renderInsertColumnList cols =
     let items = toL cols
         rendered = map (inline render) items
-     in if length items <= 3
+     in if length items <= insertInlineColumns
             then indent indentSize ("(" <> commaJoin rendered <> ")")
             else indent indentSize (renderBracketList rendered)
 
